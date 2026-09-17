@@ -1,0 +1,41 @@
+# inputs + fetched data are gitignored (regenerate via stage_ancillary; stage the RSLCs locally),
+# EXCEPT the small hand-staged inputs that cannot be re-fetched -- the runconfig template and the
+# on-site met CSVs -- which ARE tracked so the repo carries them.
+data/*
+!data/rslc/
+data/rslc/*
+!data/rslc/runconfig.rc.yaml
+!data/met/
+data/met/*
+!data/met/*.csv
+
+# generated data products (GUNW, DEM, dSWE/dHS NetCDF) -- regenerate with run_workflow.py
+outputs/
+
+__pycache__/
+*.pyc
+.DS_Store
+*.log
+
+# figures: only the paper, supplement and press deliverables are tracked --
+# everything else under figures/ is exploratory and stays local
+figures/*
+!figures/fig1_context.png
+!figures/fig2_results.png
+!figures/fig3_insets.png
+!figures/fig3_subscenes.png
+!figures/supplement/
+figures/supplement/*
+!figures/supplement/figS1_coherence_077.png
+!figures/supplement/figS2_temperature_profiles.png
+!figures/supplement/figS_unwrapping.png
+!figures/NISAR_PRESS/
+figures/NISAR_PRESS/*
+!figures/NISAR_PRESS/feb_nisar_lidar_ex.png
+!figures/NISAR_PRESS/feb_nisar_lidar_ex_own_stretch.png
+!figures/NISAR_PRESS/nisar_lidar_insets.png
+!figures/NISAR_PRESS/nisar_vs_lidar.png
+!figures/NISAR_PRESS/press_insets.png
+
+# exploratory / one-off analysis scripts
+scratch/
