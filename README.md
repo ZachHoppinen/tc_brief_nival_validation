@@ -49,7 +49,7 @@ WorldCover, MTBS, NAIP, Pioneer Fire -- need nothing):
 ## Run
 
 ```bash
-python src/nival/stage_ancillary.py          # fetch remote data (lidar, SNOTEL, IONEX, fire, WorldCover, MTBS, NAIP)
+python src/nival/stage_ancillary.py          # fetch remote data (lidar, SNOTEL, IONEX, fire, WorldCover, DEM, MTBS, NAIP)
 python src/nival/download_gunw.py            # the operational L2 GUNW for the pair (2.5 GB, from ASF)
 python src/nival/run_workflow.py             # GUNW + lidar -> dSWE/dHS product
 python src/nival/paper_figures.py            # the three paper figures -> figures/

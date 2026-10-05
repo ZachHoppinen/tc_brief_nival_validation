@@ -8,6 +8,7 @@ One script, run once. Pulls:
   WorldCover 2021         -- ESA (AWS)               -> worldcover_class_mores.tif
   MTBS burn severity      -- USFS ImageServer        -> mtbs_severity_mores.tif
   NAIP aerial basemap     -- USGS ImageServer        -> naip_basemap.png
+  Copernicus GLO-30 DEM   -- dem_stitcher (public)   -> outputs/gunw/dem_subset.tif
   GUNW ancillary          -- NASA Earthdata (hyp3)   -> outputs/gunw/ancillary/<role>/
                              (precise orbits, ECMWF troposphere, TEC, water mask)
 
@@ -169,6 +170,23 @@ def fetch_worldcover():
     print(f"  wrote {paths.WORLDCOVER.name}")
 
 
+def fetch_dem():
+    """Copernicus GLO-30 over the AOI (+0.1 deg buffer), ellipsoidal heights -> the scene DEM."""
+    if paths.SUBSET_DEM.exists():
+        print(f"  skip (exists): {paths.SUBSET_DEM.name}")
+        return
+    import rasterio
+    from dem_stitcher import stitch_dem
+    west, south, east, north = paths.AOI
+    # same buffer and ellipsoid conversion old/generate_gunw.py used, so the DEM is unchanged
+    dem_array, dem_profile = stitch_dem([west - 0.1, south - 0.1, east + 0.1, north + 0.1],
+                                        dem_name="glo_30", dst_ellipsoidal_height=True)
+    paths.SUBSET_DEM.parent.mkdir(parents=True, exist_ok=True)
+    with rasterio.open(paths.SUBSET_DEM, "w", **dem_profile) as dst:
+        dst.write(dem_array, 1)
+    print(f"  wrote {paths.SUBSET_DEM.name}")
+
+
 def fetch_mtbs():
     """USFS MTBS thematic burn severity clipped to the AOI -> class raster.
     0=background, 1=unburned-low, 2=low, 3=moderate, 4=high, 5=greenness, 6=mask.
@@ -262,6 +280,8 @@ def main():
     fetch_fire()
     print("WorldCover (ESA)...")
     fetch_worldcover()
+    print("Copernicus GLO-30 DEM (public)...")
+    fetch_dem()
     print("MTBS burn severity (USFS)...")
     fetch_mtbs()
     print("NAIP aerial basemap (USGS)...")

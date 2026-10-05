@@ -20,7 +20,7 @@ PAPER_FIGURES_DIR = ROOT.parent / "nival_paper" / "figures"  # the TC paper repo
 # --- generated outputs ---
 GUNW_DIR = OUTPUTS / "gunw"          # legacy self-processed GUNWs (generate_gunw.py only)
 PRODUCTS_DIR = OUTPUTS / "retrieval"  # retrieval.build_product writes dswe_dhs_operational.nc
-SUBSET_DEM = GUNW_DIR / "dem_subset.tif"  # AOI Copernicus GLO-30 staged by generate_gunw;
+SUBSET_DEM = GUNW_DIR / "dem_subset.tif"  # AOI Copernicus GLO-30 staged by stage_ancillary;
 #                                           the scene DEM for LIA too (retrieval + maps)
 
 # --- input data (assumed present under data/) ---
