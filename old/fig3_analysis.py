@@ -11,17 +11,58 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.colors import BoundaryNorm, ListedColormap
 from matplotlib.patches import Patch
+from matplotlib.ticker import FuncFormatter, MultipleLocator
 from rasterio.enums import Resampling
+from scipy.ndimage import rotate as ndrotate
 from scipy.ndimage import uniform_filter
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from nival import paths, retrieval   # noqa: E402
-from nival.ancillary_plotting import _raster_on_grid   # noqa: E402
-from nival.paper_figures import (WINDOW, LOCAL_R_WINDOW, OPEN_COLORS, OPEN_NAMES,  # noqa: E402
-                                 _crop_to_valid)
-from nival.validation_plotting import (DHS_VMAX, DHS_VMIN, DSWE_VMAX, DSWE_VMIN,  # noqa: E402
-                                       LS, add_contours, add_north_arrow, km_ticks,
-                                       rotate)
+from nival.paper_figures import _raster_on_grid   # noqa: E402
+from fig3_20m import WINDOW, LOCAL_R_WINDOW, OPEN_NAMES   # noqa: E402  (old/fig3_20m.py)
+from nival.paper_figures import (DHS_VMAX, DHS_VMIN, DSWE_VMAX, DSWE_VMIN,  # noqa: E402
+                                 LS, add_contours)
+
+OPEN_COLORS = ["#1b5e20", "#bcaa66", "#ffd54f", "#fb8c00", "#b71c1c"]   # one per OPEN_NAMES class
+ANG = -36.0                                    # map rotation so the swath fills the panel
+
+
+# the rotated-map helpers the paper figures used before they moved to the north-up Fig. 1 frame
+def rotate(field, cval):
+    """Nearest-neighbour rotation by ANG degrees, filling outside with `cval`."""
+    return ndrotate(field, ANG, reshape=True, order=0, cval=cval, mode="constant")
+
+
+def add_north_arrow(ax):
+    """North arrow in the upper-left for the rotated map (true north is up-and-left)."""
+    theta = np.radians(-45)
+    base_x, base_y, length = 0.12, 0.82, 0.08
+    tip_x, tip_y = base_x + length * np.sin(theta), base_y + length * np.cos(theta)
+    ax.annotate("", xy=(tip_x, tip_y), xytext=(base_x, base_y), xycoords="axes fraction",
+                textcoords="axes fraction", arrowprops=dict(arrowstyle="-|>", color="k", lw=1.8))
+    ax.text(tip_x - 0.012, tip_y + 0.015, "N", transform=ax.transAxes, ha="center",
+            va="center", fontsize=14, fontweight="bold", color="k")
+
+
+def km_ticks(ax, posting_metres, step_metres, left=True):
+    """Label map axes in km (every `step_metres`) -- a scale for the rotated swath."""
+    to_km = FuncFormatter(lambda value, pos: f"{value / 1000:.0f}")
+    ax.xaxis.set_major_locator(MultipleLocator(step_metres))
+    ax.xaxis.set_major_formatter(to_km)
+    ax.set_xlabel("km", fontsize=13)
+    if left:
+        ax.yaxis.set_major_locator(MultipleLocator(step_metres))
+        ax.yaxis.set_major_formatter(to_km)
+        ax.set_ylabel("km", fontsize=13)
+    else:
+        ax.set_yticks([])
+
+
+def _crop_to_valid(*arrays, mask):
+    """Crop every array to the bounding box of True cells in `mask`."""
+    rows, cols = np.where(mask)
+    box = (slice(rows.min(), rows.max() + 1), slice(cols.min(), cols.max() + 1))
+    return [a[box] for a in arrays], mask[box]
 
 
 def _openness_class(xs, ys):

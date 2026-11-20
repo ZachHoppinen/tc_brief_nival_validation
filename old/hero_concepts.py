@@ -4,7 +4,7 @@ All build on the same base: NISAR beside lidar, flipped ice colours, a gamma 1.5
 fitted on the coherent pixels, no numbers on the colour bar. They vary the framing, the
 palette, the background and how much context is shown.
 
-    conda run -n nival python src/nival/hero_concepts.py
+    conda run -n nival python old/hero_concepts.py
 """
 from __future__ import annotations
 
@@ -19,10 +19,11 @@ import xarray as xr
 from cmcrameri import cm as cmc
 from matplotlib.colors import LightSource, PowerNorm
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from nival import paths, unwrap_20m   # noqa: E402
-from nival.press_concepts import DX, equalize, limits, load   # noqa: E402
-from nival.press_figure import PICKS, lidar_at, window   # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from nival import paths   # noqa: E402
+import unwrap_20m   # noqa: E402  (old/unwrap_20m.py)
+from press_concepts import DX, equalize, limits, load   # noqa: E402
+from press_figure import PICKS, lidar_at, window   # noqa: E402
 
 OUT = paths.FIGURES_DIR / "NISAR_PRESS" / "hero_concepts"
 FONT = {"fontfamily": "Helvetica Neue"}
@@ -57,7 +58,7 @@ def _rotate_nan(field, deg):
 def fields(d):
     """NISAR at 20 m, lidar at 3 m, plus the coherent-pixel stretch limits for each."""
     xs, ys, nisar, lidar, seen, crop, ext = d
-    from nival.press_concepts import COHERENCE as coh
+    from press_concepts import COHERENCE as coh
     ref_n = np.where(coh >= COH_MIN, nisar, np.nan)[crop]
     _, _, fine = lidar_at(ext[0], ext[1], ext[3], ext[2])
     la = limits(ref_n, lo=PCT[0], hi=PCT[1])
@@ -359,7 +360,7 @@ def c13_subtle(d):
                  path_effects=[pe.withStroke(linewidth=3, foreground="0.15")])
 
     # locator in the figure's own palette: pale ice fill, mid-blue edge, deep navy marker
-    from nival.ancillary_plotting import idaho_locator
+    from nival.paper_figures import idaho_locator
     loc = axes[1].inset_axes([0.78, 0.66, 0.20, 0.34])
     idaho_locator(loc)
     for txt in loc.texts:
@@ -475,7 +476,7 @@ def scale_bar(ax, ext, km=1.0, colour="w"):
 
 def locator(ax, rect=(0.78, 0.66, 0.20, 0.34)):
     """Idaho in the figure's palette, marker only, no label."""
-    from nival.ancillary_plotting import idaho_locator
+    from nival.paper_figures import idaho_locator
     loc = ax.inset_axes(list(rect))
     idaho_locator(loc)
     for txt in loc.texts:

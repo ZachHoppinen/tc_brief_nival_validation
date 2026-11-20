@@ -1,8 +1,7 @@
 """Quantitative support for the NISAR dSWE vs NIVAL dHS paper: one script -> one markdown report.
 
-`main()` prints every number the manuscript cites, each block under the claim it supports. The
-scene-r blocks run on the 20 m product; the local-r block runs on the 40 m headline product
-(matching fig3), with the local window held at the same ~420 m physical scale. In run order:
+`main()` prints every number the manuscript cites, each block under the claim it supports.
+Everything runs on the operational 80 m product of the Fig. 2 pair. In run order:
 
   ASSUMPTIONS   -- physical constants + modelling choices, pulled from the live code
   LIDAR GATE    -- fraction of native-resolution lidar dHS the |dHS| outlier gate removes
@@ -10,7 +9,7 @@ scene-r blocks run on the 20 m product; the local-r block runs on the 40 m headl
   HEADLINE      -- r / r(deramp) / RMSE / density on the operational GUNW, by coherence gate
   SCALE         -- kilometer-scale (low-pass) vs sub-kilometer (residual) correlation
   OPENNESS/BURN -- r + coherence by canopy fraction and MTBS severity (less canopy -> better)
-  LOCAL r       -- local r vs coherence / incidence / canopy, + per-stratum medians (fig3)
+  LOCAL r       -- local r vs coherence / incidence / canopy, + per-stratum medians
   TERRAIN, DRIFT-CONTROL, WIND, LIDAR-WINDOW, MET, IONOSPHERE, TROPOSPHERE -- conditions + controls
 
 Run:  conda run -n nival python src/nival/paper_stats.py   (writes outputs/paper_stats.md)
@@ -30,7 +29,7 @@ from scipy.stats import spearmanr
 
 from nival import paths, retrieval
 from nival.retrieval import local_correlation          # shared local-r metric (fig3 uses the same)
-from nival.ancillary_plotting import (_bilinear as _bilin, _elevation_on_grid,
+from nival.paper_figures import (_bilinear as _bilin, _elevation_on_grid,
                                       _raster_on_grid, read_ionex)
 
 # Everything runs on the one operational product (80 m posting). The windows are specified
@@ -59,7 +58,7 @@ RG = "science/LSAR/GUNW/metadata/radarGrid"
 def fig1_met():
     """Fig-1 context numbers from the met series (SWE change, dawn temps, quiet iono)."""
     import datetime as dt
-    from nival.ancillary_plotting import load_met_series
+    from nival.paper_figures import load_met_series
     m = load_met_series()
     t, td = list(m["t"]), list(m["tdates"])
     iA, iB = t.index(dt.date(2026, 2, 7)), t.index(dt.date(2026, 2, 19))
@@ -220,79 +219,6 @@ def scale_decomposition(cutoff_m=1000.0):   # sigma = cutoff/2 = the 500 m the p
     print(f"  -> at the {cutoff_m:.0f} m cutoff (Gaussian sigma {cutoff_m/2:.0f} m): "
           f"kilometer-scale r = {corr(lo_s, lo_h):.2f}, "
           f"sub-kilometer residual r = {corr(dswe - lo_s, dhs - lo_h):.2f}")
-
-
-def posting_stats():
-    """Scene-wide agreement at the delivered 80 m posting and at the 20 m posting we unwrap.
-
-    The operational GUNW ships the wrapped interferogram at 20 m but only unwraps at 80 m.
-    Fig. 3 is drawn from the 20 m layer unwrapped here (nival.unwrap_20m). The third row
-    averages that field onto the delivered product's own cell centres, so the three rows are
-    the same scene at three effective resolutions.
-    """
-    from nival import unwrap_20m
-    from nival.paper_figures import (BURNED, SUB_WIN_X, SUB_WIN_Y, _fraction_on_grid,
-                                     _lidar_on, subscene_windows)
-
-    def block_average(field, xs, ys, ox, oy):
-        """Average a fine regular grid onto a coarser one by nearest-cell assignment.
-
-        coarsen().mean() blocks do not land on the coarse product's own cell centres, so
-        the two grids are matched here explicitly rather than by a nearest-neighbour interp.
-        """
-        iy = np.rint((oy[0] - ys) / (oy[0] - oy[1])).astype(int)
-        ix = np.rint((xs - ox[0]) / (ox[1] - ox[0])).astype(int)
-        keep_y, keep_x = (iy >= 0) & (iy < len(oy)), (ix >= 0) & (ix < len(ox))
-        total = np.zeros((len(oy), len(ox)))
-        count = np.zeros((len(oy), len(ox)))
-        sub = field[np.ix_(keep_y, keep_x)]
-        good = np.isfinite(sub)
-        np.add.at(total, (iy[keep_y][:, None].repeat(keep_x.sum(), 1)[good],
-                          ix[keep_x][None, :].repeat(keep_y.sum(), 0)[good]), sub[good])
-        np.add.at(count, (iy[keep_y][:, None].repeat(keep_x.sum(), 1)[good],
-                          ix[keep_x][None, :].repeat(keep_y.sum(), 0)[good]), 1.0)
-        return np.where(count > 0, total / np.where(count > 0, count, 1), np.nan)
-
-    dens = retrieval.SNOW_DENSITY / retrieval.WATER_DENSITY
-
-    def corr(a, b):
-        m = np.isfinite(a) & np.isfinite(b)
-        return (np.corrcoef(a[m], b[m])[0, 1], int(m.sum())) if m.sum() else (np.nan, 0)
-
-    o = xr.open_dataset(paths.product())
-    lid80 = o["dhs"].values * dens * 1000
-    fine = xr.open_dataset(unwrap_20m.product())
-    xs, ys = fine.x.values, fine.y.values
-    lid20 = _lidar_on(xs, ys) * dens * 1000
-    up = block_average(fine["dswe"].values, xs, ys, o.x.values, o.y.values)
-
-    print("\n=== POSTING (delivered 80 m unwrap vs the 20 m wrapped layer unwrapped here) ===")
-    print(f"{'field':>26}{'r':>7}{'n':>9}")
-    for label, a, b in [("80 m, delivered unwrap", o["dswe"].values * 1000, lid80),
-                        ("20 m, SNAPHU here", fine["dswe"].values, lid20),
-                        ("20 m averaged to 80 m", up, lid80)]:
-        r, n = corr(a, b)
-        print(f"{label:>26}{r:>7.2f}{n:>9d}")
-
-    # the two Fig. 3 subscenes, placed by external masks rather than by correlation
-    dswe20 = fine["dswe"].values
-    coh20 = fine["coherence"].values
-    lia20 = fine["lia"].values          # the product's own 20 m incidence angle
-    reference = xr.DataArray(np.zeros_like(dswe20), coords={"y": fine.y, "x": fine.x},
-                             dims=("y", "x")).rio.write_crs(paths.EPSG)
-    burn = _fraction_on_grid(paths.MTBS, lambda a: a.isin(BURNED), reference)
-    fcf = _fraction_on_grid(paths.WORLDCOVER, lambda a: a == 10, reference)
-    print("=== FIG-3 SUBSCENES (20 m, 1.5 x 3 km) ===")
-    print(f"{'subscene':>28}{'r':>7}{'slope':>8}{'coh':>7}{'burn%':>7}{'fcf%':>7}{'LIA':>6}{'n':>8}")
-    for name, (y0, x0) in subscene_windows(dswe20, lid20, lia20, burn, xs, ys):
-        sl = (slice(y0, y0 + SUB_WIN_Y), slice(x0, x0 + SUB_WIN_X))
-        S, D = dswe20[sl], lid20[sl]
-        f = np.isfinite(S) & np.isfinite(D)
-        r = np.corrcoef(D[f], S[f])[0, 1]
-        slope = np.polyfit(D[f], S[f], 1)[0]
-        print(f"{name:>28}{r:>7.2f}{slope:>8.2f}{np.nanmedian(coh20[sl]):>7.2f}"
-              f"{100 * np.nanmean(burn[sl]):>7.0f}{100 * np.nanmean(fcf[sl]):>7.0f}"
-              f"{np.nanmedian(lia20[sl]):>6.0f}{int(f.sum()):>8d}")
 
 
 def deramp_r(a, b, e):
@@ -549,7 +475,7 @@ def met_snow():
     """6. Freeman SNOW temperatures at both overpasses (dry if all < 0) + depth change."""
     import datetime as dt
     import matplotlib.dates as mdates
-    from nival.ancillary_plotting import snowpack_thermograph, freeman_06
+    from nival.paper_figures import snowpack_thermograph, freeman_06
     tnum, _, field, hs, _ = snowpack_thermograph()
     print("\n=== FREEMAN SNOWPACK TEMPERATURE at the overpasses (dry if all < 0) ===")
     for lbl, day in [("A Feb 7", "2026-02-07"), ("B Feb 19", "2026-02-19")]:
@@ -675,7 +601,6 @@ def main():
               f"{dens:>9.0f}{n:>9d}{n / total:>11.1%}")
 
     scale_decomposition()                                                    # 2b: kilometer vs sub-kilometer
-    posting_stats()                                                          # 2c: 80 m vs 20 m + Fig-3 subscenes
 
     burn_fcf_stats(dswe, dhs, coh, fcf, sev)                                  # 3
 
@@ -715,7 +640,8 @@ def main():
     ionosphere_stats(xs, ys); troposphere_stats(xs, ys, dswe, elev)          # nuisance delays
 
 
-if __name__ == "__main__":
+def write_report():
+    """Run main() and save everything it prints as outputs/paper_stats.md."""
     capture = io.StringIO()
     console = sys.stdout
     sys.stdout = _Tee(console, capture)            # live to console + captured for markdown
@@ -727,3 +653,7 @@ if __name__ == "__main__":
     report.parent.mkdir(parents=True, exist_ok=True)
     report.write_text(_to_markdown(capture.getvalue()))
     print(f"\nwrote {report}")
+
+
+if __name__ == "__main__":
+    write_report()

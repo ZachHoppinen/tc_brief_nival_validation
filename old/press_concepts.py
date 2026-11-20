@@ -5,7 +5,7 @@ we resolve fine detail, that we cover the whole area, and that it looks good. Co
 are qualitative (less snow to more snow) rather than numeric, because the point for this
 audience is the pattern, not the value.
 
-    conda run -n nival python src/nival/press_concepts.py
+    conda run -n nival python old/press_concepts.py
 """
 from __future__ import annotations
 
@@ -20,10 +20,11 @@ import xarray as xr
 from cmcrameri import cm as cmc
 from matplotlib.colors import LightSource, PowerNorm
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from nival import paths, retrieval, unwrap_20m   # noqa: E402
-from nival.paper_figures import _lidar_on   # noqa: E402
-from nival.press_figure import PICKS, lidar_at, window   # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from nival import paths, retrieval   # noqa: E402
+import unwrap_20m   # noqa: E402  (old/unwrap_20m.py)
+from fig3_20m import _lidar_on   # noqa: E402
+from press_figure import PICKS, lidar_at, window   # noqa: E402
 
 OUT = paths.FIGURES_DIR / "NISAR_PRESS" / "concepts"
 DX = 20.0

@@ -22,7 +22,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))   # the src/ dir
 from nival import paths   # noqa: E402
 
 MELT_TOL_C = 0.1          # sensor resolution either side of the melting point
@@ -35,7 +35,6 @@ OVERPASS_LOCAL_H = {"077": 5 + 46 / 60, "149": 5 + 37 / 60, "114": 19 + 46 / 60}
 EVENING_TRACKS = {"114"}
 
 SNOTEL_ELEV_M, FREEMAN_ELEV_M = 1880.0, 2392.0
-SNOTEL_PROFILE = Path.home() / "Documents/nisar_swe/data/snotels/ptemp/637_ID.csv.gz"
 
 # Freeman DTC string: 4 in spacing, ground at sensor 35, sensor 20 reads a constant 0 C
 DTC_SPACING_M, DTC_GROUND_SENSOR, DTC_DEAD = 0.1016, 35, {20}
@@ -75,11 +74,14 @@ def freeman_profile():
 
 def snotel_profile():
     """SNOTEL 637 as (hourly profile, daily depth); columns are height above ground [m]."""
-    frame = pd.read_csv(SNOTEL_PROFILE, index_col=0, parse_dates=True)
+    from nival.download_paper_data import fetch_snotel_season
+    from nival.supplement.download_supplement_data import fetch_snotel_profile
+    if not paths.SNOTEL_PTEMP.exists():
+        fetch_snotel_profile()
+    frame = pd.read_csv(paths.SNOTEL_PTEMP, index_col=0, parse_dates=True)
     frame.columns = [float(c) for c in frame.columns]
     frame = frame.reindex(sorted(frame.columns), axis=1)
     frame = frame.mask((frame < PLAUSIBLE_C[0]) | (frame > PLAUSIBLE_C[1]))
-    from nival.stage_ancillary import fetch_snotel_season
     if not paths.SNOTEL_SEASON.exists():
         fetch_snotel_season()
     season = pd.read_csv(paths.SNOTEL_SEASON, parse_dates=["date"])

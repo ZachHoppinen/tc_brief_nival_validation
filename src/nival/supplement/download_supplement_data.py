@@ -1,12 +1,10 @@
-"""Fetch the weather time series the supplement needs, fresh, into data/remote/.
+"""Fetch what the supplement needs beyond the main paper's data, fresh, into data/.
 
-Both come from SNOTEL 637 (Mores Creek Summit) through the USDA AWDB REST API, no login:
-
-  snow temperature profile -- hourly PTEMP at every sensor height  -> snotel_637_ptemp.csv.gz
-  season depth + SWE       -- daily SNWD and WTEQ, whole water year -> snotel_637_season.csv
+  SNOTEL 637 snow temperature profile -- USDA AWDB REST, no login: hourly PTEMP at every
+                                         sensor height        -> remote/snotel_637_ptemp.csv.gz
 
 The Freeman profile, the other station the wetness census reads, is in the tracked
-data/met/ CSVs and needs no download. Idempotent: existing files are skipped.
+data/met/ CSVs and needs no download. Idempotent: an existing file is skipped.
 
     conda run -n nival python src/nival/supplement/download_supplement_data.py
 """
@@ -22,8 +20,6 @@ from nival import paths   # noqa: E402
 from nival.download_paper_data import AWDB, SNOTEL_STATION, _get_json   # noqa: E402
 
 IN_TO_M = 0.0254
-
-
 def fetch_snotel_profile():
     """SNOTEL 637 hourly snow temperature profile in degrees C; one column per sensor,
     named by its height above ground in metres."""
@@ -55,32 +51,9 @@ def fetch_snotel_profile():
           f"{profile.columns.min():.2f} to {profile.columns.max():.2f} m)")
 
 
-def fetch_snotel_season():
-    """SNOTEL 637 daily snow depth and SWE across the whole water year.
-
-    download_paper_data.fetch_snotel() freezes only the February window the headline pair
-    sits in; the wetness census needs every acquisition from November to March.
-    """
-    if paths.SNOTEL_SEASON.exists():
-        print(f"  skip (exists): {paths.SNOTEL_SEASON.name}")
-        return
-    def series(code):
-        url = (f"{AWDB}/data?stationTriplets={SNOTEL_STATION}&elements={code}&duration=DAILY"
-               f"&beginDate={paths.SEASON_D0}&endDate={paths.SEASON_D1}")
-        return {v["date"]: v["value"] for v in _get_json(url)[0]["data"][0]["values"]}
-
-    depth, swe = series("SNWD"), series("WTEQ")
-    rows = [dict(date=d, snwd_in=depth.get(d), wteq_in=swe.get(d)) for d in sorted(depth)]
-    paths.SNOTEL_SEASON.parent.mkdir(parents=True, exist_ok=True)
-    pd.DataFrame(rows).to_csv(paths.SNOTEL_SEASON, index=False)
-    print(f"  wrote {paths.SNOTEL_SEASON.name} ({len(rows)} days)")
-
-
 def main():
     print("SNOTEL 637 snow temperature profile...")
     fetch_snotel_profile()
-    print("SNOTEL 637 season depth + SWE...")
-    fetch_snotel_season()
     print("done.")
 
 

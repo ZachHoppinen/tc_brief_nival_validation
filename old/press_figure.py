@@ -13,7 +13,7 @@ NOT a paper figure. The four windows scored best on correlation in an earlier sw
 the amplitude match is fitted rather than measured; neither is how the manuscript's Fig. 3
 is built.
 
-    conda run -n nival python src/nival/press_figure.py
+    conda run -n nival python old/press_figure.py
 """
 from __future__ import annotations
 
@@ -26,9 +26,10 @@ import matplotlib.pyplot as plt
 import numpy as np
 import xarray as xr
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from nival import paths, retrieval, unwrap_20m   # noqa: E402
-from nival.paper_figures import _lidar_on   # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from nival import paths, retrieval   # noqa: E402
+import unwrap_20m   # noqa: E402  (old/unwrap_20m.py)
+from fig3_20m import _lidar_on   # noqa: E402
 
 OUT = paths.FIGURES_DIR / "NISAR_PRESS"
 OUTNAME = "press_insets.png"   # overridable, so colour-map variants can sit side by side

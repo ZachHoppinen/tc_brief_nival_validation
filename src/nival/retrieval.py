@@ -41,7 +41,7 @@ SNOW_DENSITY, WATER_DENSITY = 147.0, 1000.0
 # and the gate applied here can never diverge.
 DHS_GATE_M = 1.5
 
-# the scene DEM: public Copernicus GLO-30 (staged over the AOI by generate_gunw, the same
+# the scene DEM: public Copernicus GLO-30 (staged over the AOI by download_paper_data, the same
 # DEM isce3 geocodes against). It spans the full GUNW grid gap-free, so local_incidence_angle
 # covers the whole coherent scene. Shared by the figure/stats DEM readers too.
 REGION_DEM = paths.SUBSET_DEM
@@ -144,6 +144,7 @@ def build_product(gunw_path=None, lidar_a=None, lidar_b=None, out_path=None):
     product = xr.Dataset(
         {"dswe": (("y", "x"), dswe_metres),
          "dhs": (("y", "x"), dhs_metres),
+         "phase": (("y", "x"), phase.values),             # unwrapped phase as delivered [rad]
          "coherence": (("y", "x"), coherence),
          "elevation": (("y", "x"), elevation.values),
          "lia": (("y", "x"), incidence_angle_degrees)},   # the per-pixel angle already used for kappa
@@ -159,7 +160,7 @@ def build_product(gunw_path=None, lidar_a=None, lidar_b=None, out_path=None):
 def load_product():
     """Read the saved product -> dict(dswe[m], dhs[m], coherence, elevation[m], xs, ys; lia[deg] if present)."""
     if not paths.product().exists():
-        raise SystemExit(f"missing {paths.product()} -- run python src/nival/run_workflow.py")
+        raise SystemExit(f"missing {paths.product()} -- run python src/nival/run_paper_workflow.py")
     product = xr.open_dataset(paths.product())
     out = {"dswe": product["dswe"].values,
            "dhs": product["dhs"].values,

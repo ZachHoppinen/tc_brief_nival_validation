@@ -1,4 +1,4 @@
-"""Fetch all the remote ancillary data the pipeline needs, fresh, into data/.
+"""Fetch every remote input the paper needs, fresh, into data/.
 
 One script, run once. Pulls:
   NIVAL lidar snow depth  -- NSIDC NIVAL_MCS_Lidar  (DOI 10.5067/DPFDH2M49DQG)
@@ -9,13 +9,21 @@ One script, run once. Pulls:
   MTBS burn severity      -- USFS ImageServer        -> mtbs_severity_mores.tif
   NAIP aerial basemap     -- USGS ImageServer        -> naip_basemap.png
   Copernicus GLO-30 DEM   -- dem_stitcher (public)   -> outputs/gunw/dem_subset.tif
-  GUNW ancillary          -- NASA Earthdata (hyp3)   -> outputs/gunw/ancillary/<role>/
-                             (precise orbits, ECMWF troposphere, TEC, water mask)
+  operational L2 GUNW     -- ASF (2.5 GB)            -> data/gunw_operational/
+  Fig. 3 pair GUNWs       -- ASF (2.3 GB each): every production GUNW of track 077 from
+                             Nov 3 to Mar 15         -> data/gunw_operational/
+  Fig. 3 pair lidar       -- NSIDC (0.3 GB each): the flights bracketing every track-077
+                             pair in pairs.py        -> data/lidar/
+  SNOTEL 637 season       -- USDA AWDB REST          -> snotel_637_season.csv
 
-Needs a NASA Earthdata Login (earthaccess + ~/.netrc for CDDIS / GES DISC).
+Fig. 3 also reads two Hyp3-Isce3 GUNW crops in data/gunw_refocused/ (Dec 21 to Jan 14 and
+Jan 14 to Feb 7). We produced those ourselves, so they are staged by hand like the met CSVs.
+
+The GUNW is CMR collection NISAR_L2_GUNW_PROVISIONAL_V1: the analysis product, evaluated as
+delivered. Needs a NASA Earthdata Login (earthaccess + ~/.netrc for CDDIS).
 Idempotent: existing files are skipped.
 
-    conda run -n nival python src/nival/stage_ancillary.py
+    conda run -n nival python src/nival/download_paper_data.py
 """
 
 from __future__ import annotations
@@ -23,7 +31,6 @@ from __future__ import annotations
 import datetime as dt
 import gzip
 import json
-import os
 import shutil
 import subprocess
 import sys
@@ -36,9 +43,11 @@ import requests
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))   # the src/ dir
 from nival import paths   # noqa: E402
+from nival.pairs import on_track   # noqa: E402
 
 AWDB = "https://wcc.sc.egov.usda.gov/awdbRestApi/services/v1"
 SNOTEL_STATION = "637:ID:SNTL"
+GUNW_COLLECTION = "NISAR_L2_GUNW_PROVISIONAL_V1"
 
 
 # ------------------------------ NSIDC rasters ------------------------------
@@ -100,27 +109,6 @@ def fetch_snotel():
     print(f"  wrote {paths.SNOTEL_SNAP.name} ({len(rows)} days)")
 
 
-def fetch_snotel_season():
-    """SNOTEL 637 daily snow depth across the whole water year.
-
-    fetch_snotel() freezes only the February window the headline pair sits in; the
-    supplement's wetness census needs every acquisition from November to March.
-    """
-    if paths.SNOTEL_SEASON.exists():
-        print(f"  skip (exists): {paths.SNOTEL_SEASON.name}")
-        return
-    def series(code):
-        url = (f"{AWDB}/data?stationTriplets={SNOTEL_STATION}&elements={code}&duration=DAILY"
-               f"&beginDate={paths.SEASON_D0}&endDate={paths.SEASON_D1}")
-        return {v["date"]: v["value"] for v in _get_json(url)[0]["data"][0]["values"]}
-
-    depth, swe = series("SNWD"), series("WTEQ")
-    rows = [dict(date=d, snwd_in=depth.get(d), wteq_in=swe.get(d)) for d in sorted(depth)]
-    paths.SNOTEL_SEASON.parent.mkdir(parents=True, exist_ok=True)
-    pd.DataFrame(rows).to_csv(paths.SNOTEL_SEASON, index=False)
-    print(f"  wrote {paths.SNOTEL_SEASON.name} ({len(rows)} days)")
-
-
 # ------------------------------ ionosphere ------------------------------
 def fetch_ionex():
     paths.IONEX_DIR.mkdir(parents=True, exist_ok=True)
@@ -178,7 +166,7 @@ def fetch_dem():
     import rasterio
     from dem_stitcher import stitch_dem
     west, south, east, north = paths.AOI
-    # same buffer and ellipsoid conversion old/generate_gunw.py used, so the DEM is unchanged
+    # same buffer and ellipsoid conversion the retired generate_gunw.py used, so the DEM is unchanged
     dem_array, dem_profile = stitch_dem([west - 0.1, south - 0.1, east + 0.1, north + 0.1],
                                         dem_name="glo_30", dst_ellipsoidal_height=True)
     paths.SUBSET_DEM.parent.mkdir(parents=True, exist_ok=True)
@@ -213,58 +201,129 @@ def fetch_mtbs():
 def fetch_naip():
     """USGS NAIP aerial over the study-area frame -> cached png (imported lazily to avoid
     pulling cartopy/matplotlib when only the other data is wanted)."""
-    from nival import ancillary_plotting
-    ancillary_plotting.fetch_naip(ancillary_plotting.map_frame()["extent"])
+    from nival import paper_figures
+    paper_figures.fetch_naip(paper_figures.map_frame()["extent"])
 
 
-def fetch_gunw_ancillary():
-    """Fetch the GUNW-processing ancillary the SAS needs -- precise orbits, ECMWF troposphere,
-    TEC, water mask -- fresh from NASA Earthdata (the same earthaccess login as the rest), into
-    outputs/gunw/ancillary/<role>/ (cached per role). Idempotent: a
-    role whose folder already holds a file is skipped. Returns {role: Path} so generate_gunw can
-    override the runconfig template's stale paths."""
-    from hyp3_isce3.process import get_orbit, get_tec, get_tropo, get_watermask
-    earthaccess.login()          # the get_* fetchers need an Earthdata session; self-contained so a
-    #                              cold generate_gunw (which calls this directly) works, not just main()
-    ref, sec = paths.RSLC_REF.stem, paths.RSLC_SEC.stem
-    # role -> a zero-arg fetch (each get_* downloads into the cwd and returns the filename)
-    jobs = {"ref_orbit": lambda: get_orbit(ref), "sec_orbit": lambda: get_orbit(sec),
-            "ref_tropo": lambda: get_tropo(ref), "sec_tropo": lambda: get_tropo(sec),
-            "tec": lambda: get_tec(ref),
-            "watermask": lambda: get_watermask(str(paths.RSLC_REF), list(paths.AOI))}
-    # each role's file lands under <folder>/data/<hash>/ (the get_* download pattern); the moved
-    # troposphere seeds sit directly in <folder>. rglob the role's extension finds either.
-    ext = {"ref_orbit": "*.xml", "sec_orbit": "*.xml", "ref_tropo": "*.nc", "sec_tropo": "*.nc",
-           "tec": "*.json"}
-    resolved = {}
-    for role, fetch in jobs.items():
-        folder = paths.GUNW_ANC_DIR / role
-        folder.mkdir(parents=True, exist_ok=True)
-        if any(folder.iterdir()):
-            print(f"  skip (exists): {role}")
+# ------------------------------ operational GUNW ------------------------------
+def fetch_gunw(dst=None):
+    """Download the one GUNW granule named by paths.GUNW_OPERATIONAL, streaming it to disk."""
+    dst = Path(dst) if dst else paths.GUNW_OPERATIONAL
+    if dst.exists():
+        print(f"  skip (exists): {dst.relative_to(paths.ROOT)}")
+        return dst
+
+    earthaccess.login()                                         # Earthdata netrc login (idempotent)
+    # granule_name is a CMR pattern match, so the trailing * covers a granule_ur
+    # that carries the .h5 extension as well as one that does not
+    results = earthaccess.search_data(short_name=GUNW_COLLECTION, granule_name=f"{dst.stem}*", count=10)
+    urls = [url for g in results for url in g.data_links() if url.endswith(dst.name)]
+    if not urls:
+        raise SystemExit(f"NOT FOUND in {GUNW_COLLECTION}: {dst.name}")
+
+    print(f"  downloading {dst.name} -> {dst.relative_to(paths.ROOT)}")
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    session = earthaccess.get_requests_https_session()          # reuses the earthaccess login
+    tmp = dst.with_suffix(dst.suffix + ".part")
+    with session.get(urls[0], stream=True) as response:
+        response.raise_for_status()
+        with open(tmp, "wb") as out:
+            for chunk in response.iter_content(1 << 20):        # stream in 1 MB chunks
+                out.write(chunk)
+    tmp.replace(dst)                                            # atomic: only a complete file lands at dst
+    print(f"  wrote {dst.name} ({dst.stat().st_size / 1e9:.1f} GB)")
+    return dst
+
+
+# ------------------------------ the pairs of Fig. 3 and the census ------------------------------
+TRACK = "077"                  # the paper's track; ascending, frame 024 covers Mores Creek
+
+
+def gunw_pattern(pair):
+    """Granule-name pattern of the operational GUNW for one (track, ref, sec, ...) pair."""
+    track, ref, sec = pair[:3]
+    return f"NISAR_L2_PR_GUNW_*_{track}_A_024_*_{ref}T*_{sec}T*"
+
+
+def gunw_file(pair):
+    """The pair's GUNW on disk, or None if it has not been downloaded."""
+    found = sorted(paths.GUNW_OPERATIONAL.parent.glob(gunw_pattern(pair) + ".h5"))
+    return found[-1] if found else None
+
+
+def lidar_file(date):
+    """Where the NIVAL snow-depth raster of one flight date lives."""
+    return paths.LIDAR_DIR / f"NIVAL_MCS_Lidar_{date}_SD_v01.tif"
+
+
+def pair_of(name):
+    """(track, ref date, sec date) parsed from a GUNW granule or file name."""
+    parts = Path(name).name.split("_")
+    return parts[5], parts[11][:8], parts[13][:8]
+
+
+def in_window(sec):
+    """True if a pair's second date falls inside the census window in paths.py."""
+    return sec <= paths.SEASON_D1.replace("-", "")
+
+
+def local_gunws():
+    """Every GUNW on disk whose pair ends inside the census window, as
+    (track, ref, sec, path, refocused) in track then date order. A refocused crop in
+    data/gunw_refocused/ replaces the production GUNW of the same pair, and adds the pairs
+    (all of track 114) that have no production GUNW."""
+    found = {pair_of(f): (f, False) for f in paths.GUNW_OPERATIONAL.parent.glob("NISAR_L2_PR_GUNW_*.h5")}
+    found.update({pair_of(f): (f, True) for f in paths.GUNW_REFOCUSED.glob("*_crop.h5")})
+    return sorted((*pair, *value) for pair, value in found.items() if in_window(pair[2]))
+
+
+def fetch_gunws(tracks=None, last=None):
+    """Every production GUNW on ASF that covers the AOI and whose pair ends inside the census
+    window. `tracks` keeps only those tracks and `last` ("YYYYMMDD") only pairs ending by that
+    date. Granule names carry processing stamps we cannot predict, so they are found by a
+    spatial and temporal search."""
+    earthaccess.login()
+    results = earthaccess.search_data(short_name=GUNW_COLLECTION, bounding_box=paths.AOI,
+                                      temporal=(paths.SEASON_D0, paths.SEASON_D1), count=2000)
+    latest = {}
+    for name in sorted(g["umm"]["GranuleUR"].removesuffix(".h5") for g in results):
+        track, _, sec = pair_of(name)
+        if in_window(sec) and (tracks is None or track in tracks) and (last is None or sec <= last):
+            latest[pair_of(name)] = name              # sorted, so a later product counter replaces an earlier one
+    print(f"  {len(latest)} production GUNWs over the AOI, tracks {sorted({k[0] for k in latest})}")
+    for pair, name in sorted(latest.items()):
+        if gunw_file(pair):
+            print(f"  skip (exists): {gunw_file(pair).name}")
         else:
-            cwd = Path.cwd()
-            try:
-                os.chdir(folder)                       # the get_* functions download into the cwd
-                fetch()
-            finally:
-                os.chdir(cwd)
-            print(f"  fetched {role}")
-        if role == "watermask":
-            # get_watermask stages a hierarchical VRT tree (EPSG4326.vrt -> EPSG4326/N40_50/
-            # band.vrt -> ...) but only materializes the flat AOI .tif tiles, not the nested
-            # sub-VRTs -- so handing isce3's geocode any of those top VRTs makes its gdal.Warp
-            # fail on a missing nested source. Build one flat VRT directly over the downloaded
-            # tiles instead: self-contained, references only files that exist, warps cleanly.
-            from osgeo import gdal
-            tiles = sorted(str(p) for p in folder.rglob("*.tif"))
-            flat_vrt = folder / "watermask.vrt"
-            gdal.BuildVRT(str(flat_vrt), tiles)
-            resolved[role] = flat_vrt
-        else:
-            matches = sorted(folder.rglob(ext[role]))
-            resolved[role] = matches[0] if matches else next(p for p in sorted(folder.rglob("*")) if p.is_file())
-    return resolved
+            fetch_gunw(paths.GUNW_OPERATIONAL.parent / f"{name}.h5")
+
+
+def fetch_pair_lidar():
+    """The two NIVAL snow-depth rasters bracketing every census pair."""
+    dates = sorted({date for pair in on_track(TRACK) for date in pair[3:5]})
+    for date in dates:
+        fetch_nsidc("NIVAL_MCS_Lidar", [date, "SD", ".tif"], lidar_file(date))
+
+
+def fetch_snotel_season():
+    """SNOTEL 637 daily snow depth and SWE across the whole water year.
+
+    fetch_snotel() freezes only the February window the headline pair sits in; Fig. 3 and
+    the wetness census need the whole season.
+    """
+    if paths.SNOTEL_SEASON.exists():
+        print(f"  skip (exists): {paths.SNOTEL_SEASON.name}")
+        return
+    def series(code):
+        url = (f"{AWDB}/data?stationTriplets={SNOTEL_STATION}&elements={code}&duration=DAILY"
+               f"&beginDate={paths.SEASON_D0}&endDate={paths.SEASON_D1}")
+        return {v["date"]: v["value"] for v in _get_json(url)[0]["data"][0]["values"]}
+
+    depth, swe = series("SNWD"), series("WTEQ")
+    rows = [dict(date=d, snwd_in=depth.get(d), wteq_in=swe.get(d)) for d in sorted(depth)]
+    paths.SNOTEL_SEASON.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(rows).to_csv(paths.SNOTEL_SEASON, index=False)
+    print(f"  wrote {paths.SNOTEL_SEASON.name} ({len(rows)} days)")
 
 
 def main():
@@ -286,8 +345,14 @@ def main():
     fetch_mtbs()
     print("NAIP aerial basemap (USGS)...")
     fetch_naip()
-    print("GUNW ancillary (orbits / ECMWF troposphere / TEC / water mask)...")
-    fetch_gunw_ancillary()
+    print("operational L2 GUNW (ASF)...")
+    fetch_gunw()
+    print(f"operational GUNWs for the track-{TRACK} pairs of Fig. 3 (ASF)...")
+    fetch_gunws(tracks=(TRACK,), last=paths.FIG3_LAST)
+    print(f"NIVAL lidar snow depth for the track-{TRACK} pairs (NSIDC)...")
+    fetch_pair_lidar()
+    print("SNOTEL 637 season depth + SWE...")
+    fetch_snotel_season()
     print("done.")
 
 

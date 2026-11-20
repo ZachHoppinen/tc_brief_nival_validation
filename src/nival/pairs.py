@@ -1,7 +1,7 @@
 """The candidate NISAR pairs over Mores Creek Summit and the lidar flights around them.
 
-The supplement's pair census is built from this list, so it lives here rather than in
-scratch: anything a figure or table in the paper depends on has to be tracked.
+Fig. 3's lidar row and the supplement's pair census are built from this list, so it lives
+here rather than in scratch: anything a figure or table in the paper depends on has to be tracked.
 
     (track, ref, sec, lidar_a, lidar_b)
 """

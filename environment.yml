@@ -1,35 +1,23 @@
-# One conda env that runs every step of the pipeline (stage_ancillary -> generate_gunw
-# -> retrieval/build_product -> paper_figures):
+# One conda env that runs the whole pipeline (src/nival/paper_workflow.py):
 #
 #     conda env create -f environment.yml
 #     conda activate nival
+#     pip install --no-deps nisar_pytools
 #
-# It is the hyp3-isce3 InSAR stack (isce3 brings nisar.workflows; raider/snaphu/
-# dem_stitcher for the GUNW) plus the geospatial + plotting libs for the retrieval and
-# figures, plus nisar_pytools (local-incidence-angle) and hyp3_isce3 (RSLC subset/crop)
-# via pip. numpy is pinned to 1.26.4 because isce3 requires numpy < 2.
+# numpy is pinned to 1.26.4 because isce3 requires numpy < 2.
 name: nival
 channels:
   - conda-forge
 dependencies:
-  # --- NISAR InSAR processing: generate_gunw ---
   - python>=3.12,<3.13
-  - isce3            # provides nisar.workflows.insar (the InSAR SAS) + stage_dem
-  - raider           # troposphere correction (RAiDER)
-  - snaphu           # phase unwrapping
-  - dem_stitcher     # public Copernicus GLO-30 DEM, geoid->ellipsoid
-  - gdal
-  - pyaps3
-  # hyp3_isce3's own deps (crop_rslc + the process ancillary fetchers) -- from conda-forge so
-  # they resolve against the conda gdal + numpy<2 above (a pip install would drag a PyPI gdal
-  # that won't compile, and numpy 2 that breaks isce3). The git hyp3_isce3 below is --no-deps.
-  - hyp3lib
-  - asf_search
-  - utm
-  # --- remote data fetches: stage_ancillary ---
-  - earthaccess      # NSIDC / NASA Earthdata
+  # --- unwrap_20m: effective looks + SNAPHU ---
+  - isce3            # isce3 + nisar.workflows.unwrap.get_effective_looks
+  - snaphu           # phase unwrapping (snaphu-py)
+  # --- remote data fetches: download_paper_data ---
+  - earthaccess      # NSIDC / ASF via NASA Earthdata
   - requests
-  # --- retrieval + figures ---
+  - dem_stitcher     # public Copernicus GLO-30 DEM, geoid->ellipsoid
+  # --- retrieval + stats + figures ---
   - numpy=1.26.4
   - scipy
   - pandas<3
@@ -40,20 +28,16 @@ dependencies:
   - rasterio
   - pyproj
   - shapely
-  - pyyaml
+  - geopandas        # reads the hand-drawn inset shapefile
   - matplotlib
   - cartopy
+  - cmocean          # colour maps
+  - pillow           # resizes figures to the print width
+  # --- nisar_pytools' own deps, so the --no-deps pip install below finds them ---
+  - asf_search
+  - dask
+  - pyyaml
   - pip
-# Two packages are installed in a SECOND step (see below), NOT here, so pip does not re-resolve
-# their deps: the conda-forge stack above already provides gdal / rasterio / numpy<2 / isce3 /
-# hyp3lib / asf_search / utm. A plain pip install would pull a PyPI gdal (won't compile against
-# the conda gdal headers) + numpy 2 (breaks the isce3 pin). After this env is created:
-#
-#   conda activate nival
-#   pip install --no-deps nisar_pytools \
-#     "hyp3_isce3 @ git+https://github.com/ASFHyP3/hyp3-isce3.git@740350a"
-#
-#   nisar_pytools -> retrieval.py's local-incidence-angle. On PyPI (Zach's own package), so a
-#     plain name works; use @ git+https://github.com/zmhoppinen/nisar_pytools.git for an unreleased build.
-#   hyp3_isce3    -> crop_rslc (generate_gunw's RSLC subset) + process (ancillary fetchers). The crop
-#     API is NOT on main/PyPI -> pinned to commit 740350a on the `develop` branch, which carries it.
+# nisar_pytools (retrieval's local incidence angle) is installed in a SECOND step with
+# pip --no-deps, NOT here, so pip does not re-resolve its deps: a plain pip install can pull
+# a PyPI gdal (won't compile against the conda gdal headers) and numpy 2 (breaks isce3).

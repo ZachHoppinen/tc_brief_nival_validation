@@ -4,7 +4,7 @@ The operational product ships the wrapped interferogram at 20 m but only unwraps
 Unwrapping the delivered layer here gives a finer view of the same operational phase with
 no reprocessing from the RSLCs, and is what Fig. 3 is drawn from.
 
-    conda run -n isce3 python src/nival/unwrap_20m.py
+    conda run -n nival python old/unwrap_20m.py
 """
 import sys
 from pathlib import Path
@@ -15,7 +15,7 @@ import snaphu
 import rioxarray  # noqa: F401  (registers .rio)
 import xarray as xr
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from nival import paths, retrieval   # noqa: E402
 
 WRAPPED = "science/LSAR/GUNW/grids/frequencyA/wrappedInterferogram/HH"
@@ -27,53 +27,47 @@ COST, INIT, MIN_CC_FRAC, GRAD_WINDOW = "smooth", "mcf", 0.01, (7, 7)
 def effective_looks():
     """ISCE3's own estimate, n_e = k_r k_a d_r d_a / (rho_r rho_a). For the delivered 5 by 6
     look interferogram this is 18.6, not the nominal 30, because the single-look samples are
-    oversampled relative to the resolution."""
-    from nisar.products.readers import SLC
+    oversampled relative to the resolution.
+
+    Everything is read from the GUNW's own metadata (the reference RSLC's radar grid,
+    bandwidths and orbit are carried there), so no RSLC is needed."""
+    import isce3
+    from types import SimpleNamespace
     from nisar.workflows.unwrap import get_effective_looks
-    slc = SLC(hdf5file=str(paths.RSLC_REF))
-    swath = "/science/LSAR/RSLC/swaths/frequencyA"
-    with h5py.File(paths.RSLC_REF) as f:
-        rg_bw = f[f"{swath}/processedRangeBandwidth"][()]
-        az_bw = f[f"{swath}/processedAzimuthBandwidth"][()]
-        rg_spac = f[f"{swath}/slantRangeSpacing"][()] * CROSSMUL_LOOKS[0]
-        az_spac = f[f"{swath}/sceneCenterAlongTrackSpacing"][()] * CROSSMUL_LOOKS[1]
-    return float(get_effective_looks(slc, slc.getOrbit(), rg_spac, az_spac,
-                                     rg_bw, az_bw, freq="A"))
+    with h5py.File(paths.gunw_product()) as f:
+        ref = f["science/LSAR/GUNW/metadata/processingInformation/parameters/reference/frequencyA"]
+        rg_bw, az_bw = ref["rangeBandwidth"][()], ref["azimuthBandwidth"][()]
+        rg_spac, dt = ref["slantRangeSpacing"][()], ref["zeroDopplerTimeSpacing"][()]
+        r0 = ref["slantRangeStart"][()]
+        n_az, n_rg = int(ref["numberOfAzimuthLines"][()]), int(ref["numberOfRangeSamples"][()])
+        start = ref["zeroDopplerStartTime"][()].decode()
+        orb = f["science/LSAR/GUNW/metadata/orbit/reference"]
+        times, pos, vel = orb["time"][:], orb["position"][:], orb["velocity"][:]
+        epoch = isce3.core.DateTime(orb["time"].attrs["units"].decode().split("since ")[1])
+        fc = f["science/LSAR/GUNW/grids/frequencyA/centerFrequency"][()]
+        side = f["science/LSAR/identification/lookDirection"][()].decode().lower()
+    # the reference orbit, as state vectors on its own epoch
+    orbit = isce3.core.Orbit([isce3.core.StateVector(epoch + isce3.core.TimeDelta(float(t)), p, v)
+                              for t, p, v in zip(times, pos, vel)], epoch)
+    # the reference RSLC's single-look radar grid, on the orbit's epoch
+    t0 = (isce3.core.DateTime(start) - epoch).total_seconds()
+    grid = isce3.product.RadarGridParameters(t0, isce3.core.speed_of_light / fc, 1 / dt, r0,
+                                             rg_spac, side, n_az, n_rg, epoch)
+    # single-look along-track spacing at mid swath: the routine that writes the RSLC's
+    # sceneCenterAlongTrackSpacing
+    az_spac, _ = isce3.product.get_radar_grid_nominal_ground_spacing(grid, orbit)
+    # get_effective_looks only asks its RSLC argument for the radar grid
+    slc = SimpleNamespace(getRadarGrid=lambda freq: grid)
+    return float(get_effective_looks(slc, orbit, rg_spac * CROSSMUL_LOOKS[0],
+                                     az_spac * CROSSMUL_LOOKS[1], rg_bw, az_bw, freq="A"))
 
 
-def product(filtered: bool = False) -> Path:
-    """The unfiltered product is what the paper reads; the filtered one is for press art."""
-    name = "dswe_delivered_20m_filtered.nc" if filtered else "dswe_delivered_20m.nc"
-    return paths.PRODUCTS_DIR / name
+def product() -> Path:
+    """The 20 m dSWE product, unwrapped from the delivered wrapped layer with no filtering."""
+    return paths.PRODUCTS_DIR / "dswe_delivered_20m.nc"
 
 
-def goldstein(z, alpha=0.5, patch=32):
-    """Goldstein adaptive filter: each patch's spectrum raised to a power set by its own
-    smoothness, recombined with a Hanning taper.
-
-    Applied to the wrapped phase before unwrapping it suppresses speckle while leaving
-    fringe structure intact. Against the lidar it raises the scene-wide correlation from
-    0.75 to 0.80, and the result is flat for any alpha between 0.3 and 1.0, so the gain is
-    the filtering itself rather than a tuned exponent.
-    """
-    out = np.zeros_like(z)
-    wgt = np.zeros(z.shape, float)
-    step = patch // 2
-    win = np.outer(np.hanning(patch), np.hanning(patch))
-    kernel = np.ones((3, 3)) / 9
-    for i in range(0, z.shape[0] - patch + 1, step):
-        for j in range(0, z.shape[1] - patch + 1, step):
-            spec = np.fft.fft2(z[i:i + patch, j:j + patch])
-            sm = np.fft.fftshift(np.abs(spec))
-            sm = np.abs(np.fft.ifft2(np.fft.fft2(sm) * np.fft.fft2(kernel, s=sm.shape)))
-            sm = np.fft.ifftshift(sm)
-            filtered = spec * (sm / (sm.max() or 1)) ** alpha
-            out[i:i + patch, j:j + patch] += np.fft.ifft2(filtered) * win
-            wgt[i:i + patch, j:j + patch] += win
-    return np.where(wgt > 0, out / np.where(wgt > 0, wgt, 1), z)
-
-
-def build(alpha=None):
+def build():
     with h5py.File(paths.gunw_product()) as f:
         g = f[WRAPPED]
         rows, cols = retrieval._aoi_window(g["xCoordinates"][:], g["yCoordinates"][:])
@@ -85,9 +79,6 @@ def build(alpha=None):
           f"{np.nanmedian(corr):.2f}, effective looks {nlooks:.1f}")
 
     mask = np.isfinite(igram) & (igram != 0) & np.isfinite(corr)
-    if alpha is not None:
-        igram = goldstein(np.where(mask, igram, 0).astype(np.complex64), alpha=alpha)
-        print(f"Goldstein filter applied, alpha = {alpha}")
     unw, conncomp = snaphu.unwrap(np.where(mask, igram, 0).astype(np.complex64),
                                   np.where(mask, np.nan_to_num(corr), 0).astype(np.float32),
                                   nlooks=nlooks, cost=COST, init=INIT, mask=mask,
@@ -134,12 +125,11 @@ def build(alpha=None):
                             "source": "operational GUNW wrappedInterferogram, SNAPHU here "
                                       "with the operational cost mode, initialisation and "
                                       "connected-component settings"})
-    path = product(filtered=alpha is not None)
+    path = product()
     out.to_netcdf(path)
     print(f"wrote {path.relative_to(paths.ROOT)}")
     return out
 
 
 if __name__ == "__main__":
-    build()                 # the paper product, unfiltered
-    build(alpha=0.5)        # the press product, Goldstein filtered
+    build()
