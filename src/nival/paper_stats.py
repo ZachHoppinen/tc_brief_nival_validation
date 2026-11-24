@@ -11,6 +11,7 @@ Everything runs on the operational 80 m product of the Fig. 2 pair. In run order
   OPENNESS/BURN -- r + coherence by canopy fraction and MTBS severity (less canopy -> better)
   LOCAL r       -- local r vs coherence / incidence / canopy, + per-stratum medians
   TERRAIN, DRIFT-CONTROL, WIND, LIDAR-WINDOW, MET, IONOSPHERE, TROPOSPHERE -- conditions + controls
+  PAIR TABLE    -- every track-077 pair: NISAR SWE change, lidar depth change, SNOTEL SWE change, r
 
 Run:  conda run -n nival python src/nival/paper_stats.py   (writes outputs/paper_stats.md)
 """
@@ -172,7 +173,7 @@ def mtbs_severity(xs, ys):
 
 def load_lia(xs, ys):
     """Per-pixel local incidence angle [deg] on the product grid. Returns None if the GUNW
-    is absent. The DEM is the gap-free Copernicus GLO-30 (_elevation_on_grid) -- the same DEM
+    is absent. The DEM is the gap-free NISAR DEM (_elevation_on_grid) -- the same DEM
     isce3 geocodes against; it spans the full scene, so local_incidence_angle returns no
     nodata holes. See [[lidar-reproject-nodata-gotcha]]."""
     if not paths.gunw_product().exists():
@@ -318,6 +319,257 @@ def lidar_window_swe():
     print(f"  radar pair (Feb07->19, 12 d): +{radar:.0f} mm    extra lidar days (Feb19->22, 3 d): +{extra:.0f} mm")
     print(f"  -> the 3 extra days add only {extra/radar*100:.0f}% of the 12-day accumulation (small); the 12-day "
           f"+{radar:.0f} mm also matches the scene dSWE signal")
+
+
+def pair_table():
+    """One row per track-077 pair of the pair timeline figure: the NISAR SWE change, the lidar
+    snow depth change of the flights matched to it in pairs.py, the SNOTEL 637 SWE change over
+    each of the two date spans, the days from each NISAR acquisition to its lidar flight, the
+    SNOTEL 637 air temperature at each NISAR acquisition and its positive degree days, the variance and
+    the 25th and 75th percentiles of the lidar map, and the pixel correlation (Pearson and Spearman) and fit slope of the two maps.
+
+    NISAR is the field the timeline draws (paper_figures._swe_change: atmosphere screens
+    removed, referenced to SNOTEL 637), lidar is the gated 80 m dHS of the pair's product. Map
+    values are medians over the pixels where both exist. The Dec 3 to Dec 13 flights are left
+    out, as in the figure, so that pair has no lidar columns."""
+    import pandas as pd
+    from nival.build_multipair import PRODUCTS
+    from nival.download_paper_data import TRACK, fetch_snotel_air_temp, local_gunws
+    from nival.pairs import PAIRS, label
+    from nival.paper_figures import _snotel_swe, _swe_change
+    snotel = _snotel_swe()                                    # metres, keyed by date
+    station = lambda a, b: (snotel[pd.Timestamp(b)] - snotel[pd.Timestamp(a)]) * 1000   # mm
+    # SNOTEL 637 daily snow depth [m], converted from inches at ingest, for the station's own accumulation density
+    season = pd.read_csv(paths.SNOTEL_SEASON, parse_dates=["date"]).set_index("date")
+    station_depth = season["snwd_in"] * 0.0254
+    if station_depth.max() > 10:
+        raise ValueError("SNOTEL snow depth is not plausible in metres; check units")
+    depth_change = lambda a, b: station_depth[pd.Timestamp(b)] - station_depth[pd.Timestamp(a)]   # m
+    # SWE change over depth change at the station across the NISAR pair [kg/m3]; no value unless depth rose by 5 cm or more
+    station_density = lambda a, b: f"{station(a, b) / depth_change(a, b):.0f}" if depth_change(a, b) >= 0.05 else "-"
+    nice = lambda a, b: f"{pd.Timestamp(a):%b} {pd.Timestamp(a).day} to {pd.Timestamp(b):%b} {pd.Timestamp(b).day}"
+    flights = {p[:3]: p[3:5] for p in PAIRS if p[3] != "20251203"}
+    # hourly air temperature [degC, UTC], read at the 12:46:36 UTC overpass by linear interpolation between the hours
+    if not paths.SNOTEL_AIR_TEMP.exists():
+        fetch_snotel_air_temp()
+    air = pd.read_csv(paths.SNOTEL_AIR_TEMP, index_col=0, parse_dates=True)["air_temp_c"].dropna()
+    hours = air.index.values.astype("datetime64[s]").astype(float)
+    at_pass = lambda d: np.interp((pd.Timestamp(d) + pd.Timedelta(hours=OVERPASS_UTC_H)).timestamp(), hours, air.values)
+    temps = lambda a, b: f"{at_pass(a):+.1f}, {at_pass(b):+.1f}"
+    # positive degree days [degC d] between two overpasses: hourly air temperature above 0 degC, summed and divided by 24
+    passing = lambda d: pd.Timestamp(d) + pd.Timedelta(hours=OVERPASS_UTC_H)
+    degree_days = lambda start, end: air[(air.index > start) & (air.index <= end)].clip(lower=0).sum() / 24
+    pdd = lambda a, b: f"{degree_days(passing(a), passing(b)):.1f}"
+    print("\n=== PAIR TABLE (track 077, every pair of the pair timeline figure) ===")
+    # days from each NISAR acquisition to its lidar flight, first and second date (positive: lidar flew later)
+    offset = lambda nisar, lidar: (pd.Timestamp(lidar) - pd.Timestamp(nisar)).days
+    print(f"{'NISAR pair':>17}{'lidar flights':>18}{'lidar - NISAR d':>17}{'air temp C':>14}{'PDD degC d':>16}{'NISAR dSWE mm':>15}{'lidar dHS m':>13}{'% dHS>0':>9}"
+          f"{'dHS var m2':>12}{'dHS 25-75% m':>16}{'SNOTEL mm (NISAR)':>19}{'SNOTEL dHS m':>14}{'SNOTEL kg/m3':>14}{'SNOTEL mm (lidar)':>19}{'r':>7}{'Spearman':>10}{'slope kg/m3':>13}{'n':>7}")
+    dates, matched, flown = set(), 0, set()                   # NISAR acquisitions, pairs with lidar, lidar flight dates
+    for track, ref, sec, path, _ in local_gunws():
+        if track != TRACK or sec > paths.FIG3_LAST:
+            continue
+        dates |= {ref, sec}
+        dswe, xs, ys, _, _ = _swe_change(path, ref, sec, snotel)   # metres
+        row = f"{nice(ref, sec):>17}"
+        product = PRODUCTS / f"{label((track, ref, sec))}.nc"
+        if (track, ref, sec) not in flights or not product.exists():
+            print(row + f"{'-':>18}{'-':>17}{temps(ref, sec):>14}{pdd(ref, sec):>16}{np.nanmedian(dswe) * 1000:>+15.0f}{'-':>13}{'-':>9}{'-':>12}{'-':>16}{station(ref, sec):>+19.0f}{depth_change(ref, sec):>+14.2f}{station_density(ref, sec):>14}{'-':>19}{'-':>7}{'-':>10}{'-':>13}{'-':>7}")
+            continue
+        first, second = flights[(track, ref, sec)]
+        matched += 1
+        flown |= {first, second}
+        ds = xr.open_dataset(product)
+        assert np.allclose(ds.x.values, xs) and np.allclose(ds.y.values, ys), "NISAR and lidar maps share one grid"
+        dhs = ds["dhs"].values                                # metres, later flight minus earlier
+        both = np.isfinite(dswe) & np.isfinite(dhs)
+        r = np.corrcoef(dswe[both], dhs[both])[0, 1]
+        rank_r = spearmanr(dswe[both], dhs[both]).statistic
+        slope = np.polyfit(dhs[both], dswe[both] * 1000, 1)[0]   # mm SWE per m depth = kg/m3, the plain fit Fig. 2 draws
+        days = f"{offset(ref, first):+d}, {offset(sec, second):+d}"
+        q25, q75 = np.percentile(dhs[both], [25, 75])
+        print(row + f"{nice(first, second):>18}{days:>17}{temps(ref, sec):>14}{pdd(ref, sec):>16}{np.median(dswe[both]) * 1000:>+15.0f}{np.median(dhs[both]):>+13.2f}{100 * (dhs[both] > 0).mean():>9.1f}"
+              f"{dhs[both].var():>12.4f}{f'{q25:+.2f}, {q75:+.2f}':>16}{station(ref, sec):>+19.0f}{depth_change(ref, sec):>+14.2f}{station_density(ref, sec):>14}{station(first, second):>+19.0f}{r:>+7.2f}{rank_r:>+10.2f}{slope:>+13.0f}{int(both.sum()):>7d}")
+    # the two kinds of NISAR pair: every pair in the cumulative sum, and those with a matched lidar pair
+    day = lambda d: f"{pd.Timestamp(d):%b} {pd.Timestamp(d).day}"
+    cycle = pd.date_range(min(dates), max(dates), freq="12D").strftime("%Y%m%d")
+    missed = [d for d in cycle if d not in dates]
+    print(f"  NISAR pairs in the cumulative sum: {len(dates) - 1}, from {len(dates)} acquisitions {day(min(dates))} to {day(max(dates))}")
+    print(f"  NISAR pairs with a matched lidar pair: {matched}, from {len(flown)} lidar flights ({', '.join(day(d) for d in sorted(flown))})")
+    print(f"  12-day cycle dates in that span with no acquisition: {len(missed)} of {len(cycle)} ({', '.join(day(d) for d in missed)})")
+
+
+def swe_mm_at(field, i, j, half):
+    """Median of a field [m] over the (2 half + 1) square of pixels centred on (i, j), in mm."""
+    return float(np.nanmedian(field[i - half:i + half + 1, j - half:j + half + 1]) * 1000)
+
+
+def cumulative_stats():
+    """The cumulative comparison: the seven track-077 SWE changes from Nov 3 to Mar 15 summed pixel by pixel
+    (paper_figures._swe_change, as the season totals figure sums them), against the lidar snow depth of the
+    Mar 15 flight averaged onto the 80 m grid. Prints the correlation and the fit over every pixel where both
+    exist, then the same within quartiles of local incidence angle, canopy fraction, elevation and the mean coherence of
+    the seven pairs. No masks."""
+    import pandas as pd
+    from nival.download_paper_data import TRACK, lidar_file, local_gunws
+    from nival.paper_figures import _snotel_swe, _swe_change
+    snotel = _snotel_swe()
+    print("\n=== CUMULATIVE (track 077, Nov 3 to Mar 15) vs lidar snow depth of Mar 15 ===")
+    cumulative, coherence, pairs = None, None, 0
+    for track, ref, sec, path, _ in local_gunws():
+        if track != TRACK or sec > paths.FIG3_LAST:
+            continue
+        swe_change, xs, ys, station_xy, _ = _swe_change(path, ref, sec, snotel)   # metres
+        with h5py.File(path) as f:
+            g = f[HH]
+            rows, cols = retrieval._aoi_window(g["xCoordinates"][:], g["yCoordinates"][:])
+            coh = g["coherenceMagnitude"][rows, cols].astype(float)
+        cumulative = swe_change if cumulative is None else cumulative + swe_change
+        coherence = coh if coherence is None else coherence + coh
+        pairs += 1
+    coherence = coherence / pairs                             # mean coherence of the pairs in the sum
+    grid = xr.DataArray(cumulative, coords={"y": ys, "x": xs}, dims=("y", "x")).rio.write_crs(paths.EPSG)
+    depth = rioxarray.open_rasterio(lidar_file(paths.FIG3_LAST), masked=True).squeeze().rio.write_nodata(np.nan)
+    depth = depth.rio.reproject_match(grid, resampling=Resampling.average).values   # metres, on the 80 m grid
+    if np.nanmax(depth) > 10:
+        raise ValueError("lidar snow depth is not plausible in metres; check units")
+    lia = load_lia(xs, ys)
+    # canopy fraction in the same 400 m window the other statistics use
+    fcf = uniform_filter((_raster_on_grid(paths.WORLDCOVER, xs, ys, Resampling.nearest) == 10).astype(float), size=WINDOW)
+    both = np.isfinite(cumulative) & np.isfinite(depth)
+    swe_mm = cumulative * 1000
+
+    def line(label, sel):
+        r = np.corrcoef(swe_mm[sel], depth[sel])[0, 1]
+        slope, intercept = np.polyfit(depth[sel], swe_mm[sel], 1)   # mm SWE per m depth = kg/m3
+        print(f"{label:>34}{r:>+7.2f}{slope:>+13.0f}{intercept:>+14.0f}{np.median(swe_mm[sel]):>12.0f}{np.median(depth[sel]):>12.2f}{int(sel.sum()):>7d}")
+        return r, slope, int(sel.sum())
+
+    print(f"  pairs summed: {pairs}; SNOTEL 637 SWE on Mar 15: {snotel[pd.Timestamp(paths.FIG3_LAST)] * 1000:.0f} mm")
+    # the cumulative map at the station: its own pixel and the 3 by 3 pixels the referencing uses
+    sx, sy = station_xy
+    i, j = int(np.argmin(np.abs(ys - sy))), int(np.argmin(np.abs(xs - sx)))
+    print(f"  cumulative NISAR SWE at the SNOTEL: pixel {swe_mm_at(cumulative, i, j, 0):.0f} mm, 3 by 3 median {swe_mm_at(cumulative, i, j, 1):.0f} mm, "
+          f"3 by 3 range {np.nanmin(cumulative[i - 1:i + 2, j - 1:j + 2]) * 1000:.0f} to {np.nanmax(cumulative[i - 1:i + 2, j - 1:j + 2]) * 1000:.0f} mm; "
+          f"lidar depth at that pixel {depth[i, j]:.2f} m")
+    print(f"{'subset':>34}{'r':>7}{'slope kg/m3':>13}{'intercept mm':>14}{'med SWE mm':>12}{'med depth m':>12}{'n':>7}")
+    line("all pixels", both)
+    elevation = retrieval._elevation_on_grid(xs, ys, paths.AOI)   # metres, the scene DEM on the grid
+    # the supplement table of the splits: one row per quartile, in the order the text reports them
+    table = ["\\begin{tabular}{llrrr}", "\\hline",
+             "Split by & Quartile range & $r$ & Slope (kg\\,m$^{-3}$) & Pixels \\\\", "\\hline"]
+    names = {"canopy fraction": ("Forest canopy fraction", "{:.2f} to {:.2f}"), "incidence angle": ("Local incidence angle ($^{{\\circ}}$)", "{:.0f} to {:.0f}"),
+             "mean coherence": ("Mean coherence", "{:.2f} to {:.2f}"), "elevation": ("Elevation (m)", "{:.0f} to {:.0f}")}
+    rows = {}
+    for name, field, unit in (("incidence angle", lia, "deg"), ("canopy fraction", fcf, ""), ("mean coherence", coherence, ""),
+                              ("elevation", elevation, "m")):
+        edges = np.percentile(field[both], [0, 25, 50, 75, 100])
+        for k in range(4):
+            upper = field <= edges[k + 1] if k == 3 else field < edges[k + 1]
+            r, slope, n = line(f"{name} {edges[k]:.2f} to {edges[k + 1]:.2f} {unit}".strip(), both & (field >= edges[k]) & upper)
+            rows.setdefault(name, []).append((names[name][1].format(edges[k], edges[k + 1]), r, slope, n))
+    for name in ("canopy fraction", "incidence angle", "mean coherence", "elevation"):
+        for k, (span, r, slope, n) in enumerate(rows[name]):
+            table.append(f"{names[name][0] if k == 0 else ''} & {span} & {r:.2f} & {slope:.0f} & {n} \\\\")
+        table.append("\\hline")
+    table.append("\\end{tabular}")
+    out = paths.OUTPUTS / "table_s2.tex"
+    out.write_text("\n".join(table) + "\n")
+    print(f"  wrote {out.name}")
+
+
+def reference_sensitivity():
+    """How the phase reference changes the correlations the paper reports. Each pair's SWE change is
+    (phase - c) / kappa with one constant c in phase. The paper takes c from SNOTEL 637. Here c is also taken
+    from a least-squares fit to the lidar depth change over the lidar pixels (phase / kappa = c / kappa +
+    density * dHS, which needs no density), and set to zero for no reference. Prints the pairwise r for each,
+    then the cumulative r against the Mar 15 lidar depth with the lidar-fitted pairs summed (pairs without
+    lidar keep the SNOTEL reference). No masks."""
+    import pandas as pd
+    from nival.build_multipair import PRODUCTS
+    from nival.download_paper_data import TRACK, lidar_file, local_gunws
+    from nival.pairs import PAIRS, label
+    from nival.paper_figures import _corrected_phase, _snotel_swe, _swe_change
+    snotel = _snotel_swe()
+    matched = {p[:3] for p in PAIRS if p[3] != "20251203"}    # the five pairs of Table 1
+    nice = lambda a, b: f"{pd.Timestamp(a):%b} {pd.Timestamp(a).day} to {pd.Timestamp(b):%b} {pd.Timestamp(b).day}"
+    print("\n=== PHASE REFERENCE: SNOTEL vs lidar fit vs none (track 077) ===")
+    print(f"{'pair':>18}{'r SNOTEL':>10}{'r lidar fit':>13}{'r none':>8}")
+    totals = {"SNOTEL": None, "lidar fit": None, "none": None}
+    for track, ref, sec, path, _ in local_gunws():
+        if track != TRACK or sec > paths.FIG3_LAST:
+            continue
+        swe, xs, ys, _, log = _swe_change(path, ref, sec, snotel)
+        phase, _, _ = _corrected_phase(path)
+        # per-pixel sensitivity [rad per m of SWE] from the local incidence angle, as _swe_change computes it
+        kappa = 2 * np.pi / LAMBDA * (1.59 + np.radians(load_lia(xs, ys)) ** 2.5)
+        fitted = swe                                          # pairs without lidar keep the SNOTEL reference
+        product = PRODUCTS / f"{label((track, ref, sec))}.nc"
+        if (track, ref, sec) in matched and product.exists():
+            dhs = xr.open_dataset(product)["dhs"].values
+            ok = np.isfinite(dhs) & np.isfinite(swe) & np.isfinite(kappa)
+            design = np.column_stack([1 / kappa[ok], dhs[ok]])
+            c_fit = np.linalg.lstsq(design, (phase / kappa)[ok], rcond=None)[0][0]
+            fitted = (phase - c_fit) / kappa
+            r = lambda field: np.corrcoef(field[ok], dhs[ok])[0, 1]
+            print(f"{nice(ref, sec):>18}{r(swe):>+10.2f}{r(fitted):>+13.2f}{r(phase / kappa):>+8.2f}")
+        for name, field in (("SNOTEL", swe), ("lidar fit", fitted), ("none", phase / kappa)):
+            totals[name] = field if totals[name] is None else totals[name] + field
+    grid = xr.DataArray(totals["SNOTEL"], coords={"y": ys, "x": xs}, dims=("y", "x")).rio.write_crs(paths.EPSG)
+    depth = rioxarray.open_rasterio(lidar_file(paths.FIG3_LAST), masked=True).squeeze().rio.write_nodata(np.nan)
+    depth = depth.rio.reproject_match(grid, resampling=Resampling.average).values
+    print(f"{'cumulative':>18}{'r':>8}{'slope kg/m3':>13}{'intercept mm':>14}{'median mm':>11}")
+    for name, field in totals.items():
+        ok = np.isfinite(depth) & np.isfinite(field)
+        slope, intercept = np.polyfit(depth[ok], field[ok] * 1000, 1)
+        print(f"{name:>18}{np.corrcoef(field[ok], depth[ok])[0, 1]:>+8.3f}{slope:>13.0f}{intercept:>+14.0f}{np.median(field[ok]) * 1000:>11.0f}")
+
+
+def lidar_vs_snotel_depth():
+    """Lidar snow depth at SNOTEL 637 (paper_figures.lidar_at_snotel, the Fig. 1 diamonds) against the
+    station's own snow depth on each flight date: r and RMSE over all twelve NIVAL flights."""
+    import pandas as pd
+    from nival.paper_figures import lidar_at_snotel
+    print("\n=== LIDAR vs SNOTEL snow depth at the station, by flight ===")
+    season = pd.read_csv(paths.SNOTEL_SEASON, parse_dates=["date"]).set_index("date")
+    station = season["snwd_in"] * 0.0254                      # metres
+    used = sorted(p.name.split("_")[-3] for p in paths.LIDAR_DIR.glob("*_SD_v01.tif"))     # every flight on disk
+    lidar = np.array([lidar_at_snotel(d) for d in used])
+    point = np.array([station[pd.Timestamp(d)] for d in used])
+    for d, a, b in zip(used, lidar, point):
+        print(f"  {d}: lidar {a:.2f} m | station {b:.2f} m")
+    print(f"  n {len(used)}, r {np.corrcoef(lidar, point)[0, 1]:.2f}, RMSE {np.sqrt(((lidar - point) ** 2).mean()):.2f} m, "
+          f"mean difference {(lidar - point).mean():+.2f} m")
+
+
+def refocus_coherence():
+    """Mean 80 m coherence of the track-077 pairs we rebuilt from the refocused Jan 14 acquisition:
+    the production GUNW against our GUNW from the refocused RSLC. Means are over every finite
+    pixel of the AOI clip, and over the pixels where the pair's lidar depth change exists."""
+    from nival.build_multipair import PRODUCTS
+    from nival.download_paper_data import TRACK, local_gunws, pair_of
+    from nival.pairs import label
+    print("\n=== REFOCUSED PAIRS: mean coherence, production vs refocused (track 077) ===")
+    production = {pair_of(f): f for f in paths.GUNW_OPERATIONAL.parent.glob("NISAR_L2_PR_GUNW_*.h5")}
+
+    def coherence(path):
+        # the 80 m coherence layer over the AOI and the pixel-centre coordinates of the clip
+        with h5py.File(path) as f:
+            g = f[HH]
+            rows, cols = retrieval._aoi_window(g["xCoordinates"][:], g["yCoordinates"][:])
+            return g["coherenceMagnitude"][rows, cols].astype(float), g["xCoordinates"][cols], g["yCoordinates"][rows]
+
+    print(f"{'pair':>17}{'product':>12}{'mean coh AOI':>14}{'mean coh lidar px':>19}{'n lidar px':>12}")
+    for track, ref, sec, path, refocused in local_gunws():
+        if track != TRACK or not refocused or sec > paths.FIG3_LAST:
+            continue
+        ds = xr.open_dataset(PRODUCTS / f"{label((track, ref, sec))}.nc")
+        lidar = np.isfinite(ds["dhs"].values)
+        for name, source in (("production", production[(track, ref, sec)]), ("refocused", path)):
+            coh, xs, ys = coherence(source)
+            assert np.allclose(ds.x.values, xs) and np.allclose(ds.y.values, ys), "coherence and lidar share one grid"
+            inside = lidar & np.isfinite(coh)
+            print(f"{f'{ref} {sec}':>17}{name:>12}{np.nanmean(coh):>14.2f}{coh[inside].mean():>19.2f}{int(inside.sum()):>12d}")
 
 
 def lidar_gate_stats():
@@ -555,12 +807,12 @@ def assumptions():
     print(f"  NISAR L-band wavelength lambda      = {paths.LAMBDA:.3f} m  (f = 1.26 GHz)")
     print(f"  new-snow density (anchor + wrapping + RMSE) = {SNOW_DENSITY:.0f} kg/m3   (water {WATER_DENSITY:.0f} kg/m3)")
     print(f"  phase -> SWE: Leinss (2015) kappa(theta) = (2pi/lambda)(1.59 + theta^2.5),")
-    print(f"               per-pixel LOCAL incidence theta (GUNW LOS + Copernicus GLO-30 DEM, not flat 40 deg)")
+    print(f"               per-pixel LOCAL incidence theta (GUNW LOS + NISAR DEM, not flat 40 deg)")
     print(f"               kappa(40 deg) = {KAPPA:.1f} rad/m SWE  ({MM_PER_RAD:.2f} mm SWE per rad)")
     print(f"  dHS = HS(Feb22) - HS(Feb07), outlier-gated |dHS| < 1.5 m, averaged to the GUNW posting")
-    print(f"  dSWE absolute datum: ONE constant offset to the lidar-implied SWE (dHS * density);")
-    print(f"               offset-only, so spatial pattern and correlation are unchanged")
-    print(f"  interferogram: OPERATIONAL NISAR L2 GUNW as delivered (PROVISIONAL V1, PGE R05.02.3),")
+    print(f"  dSWE phase: the GUNW's ionosphere and hydrostatic + wet troposphere screens removed;")
+    print(f"               referenced in phase units so the SNOTEL 637 pixel carries the station's SWE change")
+    print(f"  interferogram: OPERATIONAL NISAR L2 GUNW (PROVISIONAL V1, PGE R05.02.3),")
     print(f"               {POSTING_M:.0f} m unwrapped posting; crossmul 5x6, phase-unwrap 13x16 looks")
     print(f"  local r: Gaussian-weighted window, sigma = window/4, {LOCAL_R_WINDOW*POSTING_M:.0f} m physical "
           f"({LOCAL_R_WINDOW:.1f} px)")
@@ -635,6 +887,11 @@ def main():
     drift_depth_stats(dswe, dhs, coh, fcf)                                   # drift ruled out
     wind_stats()                                                             # wind: AOI calm, ridge only to 38
     lidar_window_swe()                                                       # 3 extra lidar days vs radar pair
+    pair_table()                                                             # every timeline pair: NISAR, lidar, SNOTEL, r
+    cumulative_stats()                                                       # the summed SWE against Mar 15 lidar depth, with quartile splits
+    reference_sensitivity()                                                  # SNOTEL vs lidar vs no phase reference
+    lidar_vs_snotel_depth()                                                  # lidar and station snow depth at the SNOTEL
+    refocus_coherence()                                                      # mean coherence of the refocused pairs, before and after
 
     fig1_met(); met_snow()                                                   # snowpack temps, SWE, depth
     ionosphere_stats(xs, ys); troposphere_stats(xs, ys, dswe, elev)          # nuisance delays

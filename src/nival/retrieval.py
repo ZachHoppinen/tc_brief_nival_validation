@@ -4,19 +4,19 @@ This is the one load-bearing computation. `build_product()` runs it top-to-botto
 and writes a single NetCDF; every figure reads that grid via `load_product()`.
 Everything is in metres.
 
-  dSWE [m] = (phase - median) / (k * (1.59 + theta^2.5))     Leinss (2015),
-             k = 2*pi/wavelength  (== uavsar_pytools.swe_from_phase_leinss)
+  dSWE [m] = (phase - phase at SNOTEL + kappa at SNOTEL * station dSWE) / kappa,
+             kappa = k * (1.59 + theta^2.5), k = 2*pi/wavelength     Leinss (2015)
   dHS  [m] = (snow depth Feb22 - snow depth Feb07) resampled to the grid
 
-The interferogram is the OPERATIONAL NISAR L2 GUNW for the pair (paths.GUNW_OPERATIONAL),
-read as delivered at its 80 m unwrapped posting; `_aoi_window` clips the full frame to the AOI.
-
-dSWE is then shifted by one constant so the scene-median dSWE matches the lidar-implied
-SWE (dHS * SNOW_DENSITY / WATER_DENSITY) -- an absolute anchor for display. It is a pure
-offset, so the spatial pattern and any correlation with dHS are unchanged.
+The interferogram is the OPERATIONAL NISAR L2 GUNW for the pair (paths.GUNW_OPERATIONAL) at
+its 80 m unwrapped posting; `_aoi_window` clips the full frame to the AOI. The phase has the
+GUNW's own ionosphere screen and hydrostatic + wet troposphere screens removed, and is
+referenced in phase units so the SNOTEL 637 pixel carries the station's own SWE change over
+the pair. This is paper_figures._swe_change, the same field the pair timeline draws. No
+lidar value and no snow density enter dSWE.
 
 theta is the per-pixel local incidence angle from the tested nisar_pytools tool
-(GUNW line-of-sight vectors + the Copernicus GLO-30 DEM, not a flat 40 deg). Everything
+(GUNW line-of-sight vectors + the NISAR DEM, not a flat 40 deg). Everything
 else is plain numpy / rioxarray / xarray.
 """
 
@@ -33,7 +33,7 @@ from . import paths
 
 # new-snow density: co-located SNOTEL 637 06:00 SWE/depth change over the radar pair
 # (Feb 7->19) = 56 mm SWE / 38 cm depth = 147 kg/m3. SWE depth = HS depth * SNOW_DENSITY / WATER_DENSITY.
-# Sets the absolute dSWE reference level below (a pure offset) and the lidar->phase wrapping conversion.
+# Used for the lidar->phase wrapping conversion and the lidar-implied SWE the stats compare against.
 SNOW_DENSITY, WATER_DENSITY = 147.0, 1000.0
 
 # lidar outlier gate: |dHS| above this over the 15-day lidar interval is voids / canopy
@@ -41,7 +41,7 @@ SNOW_DENSITY, WATER_DENSITY = 147.0, 1000.0
 # and the gate applied here can never diverge.
 DHS_GATE_M = 1.5
 
-# the scene DEM: public Copernicus GLO-30 (staged over the AOI by download_paper_data, the same
+# the scene DEM: the NISAR DEM (staged over the AOI by download_paper_data, the same
 # DEM isce3 geocodes against). It spans the full GUNW grid gap-free, so local_incidence_angle
 # covers the whole coherent scene. Shared by the figure/stats DEM readers too.
 REGION_DEM = paths.SUBSET_DEM
@@ -58,7 +58,7 @@ def _raster_on_grid(path, xs, ys, resampling, clip_aoi=None):
 
 
 def _elevation_on_grid(xs, ys, aoi):
-    """Copernicus GLO-30 elevation on the grid -- a gap-free DEM for local_incidence_angle."""
+    """NISAR DEM elevation on the grid -- a gap-free DEM for local_incidence_angle."""
     return _raster_on_grid(REGION_DEM, xs, ys, Resampling.bilinear, clip_aoi=aoi)
 
 
@@ -104,7 +104,7 @@ def build_product(gunw_path=None, lidar_a=None, lidar_b=None, out_path=None):
         radar_grid_x = radar_grid["xCoordinates"][:]
         radar_grid_y = radar_grid["yCoordinates"][:]
 
-    # --- Copernicus DEM on the phase grid -> per-pixel local incidence angle [degrees].
+    # --- NISAR DEM on the phase grid -> per-pixel local incidence angle [degrees].
     #     The same DEM isce3 geocodes against; it spans the full coherent scene, so LIA
     #     (and thus dSWE) cover every pixel, matching the LIA paper_stats uses. ---
     elevation = xr.DataArray(
@@ -115,12 +115,14 @@ def build_product(gunw_path=None, lidar_a=None, lidar_b=None, out_path=None):
         elevation, line_of_sight_east, line_of_sight_north, line_of_sight_up,
         radar_grid_heights, radar_grid_x, radar_grid_y, epsg=paths.EPSG).values)
 
-    # --- phase -> dSWE [m], Leinss (2015). First strip the arbitrary unwrapping offset
-    #     (InSAR phase has no absolute zero) in PHASE units -- it must come out here, before
-    #     the per-pixel kappa divide, or it smears into an incidence-angle ramp. ---
-    phase_relative = phase.values - np.nanmedian(phase.values)
-    radians_per_metre_swe = 2 * np.pi / paths.LAMBDA * (1.59 + np.radians(incidence_angle_degrees) ** 2.5)
-    dswe_metres = phase_relative / radians_per_metre_swe
+    # --- phase -> dSWE [m], Leinss (2015): ionosphere and troposphere screens removed, then
+    #     referenced to SNOTEL 637 in phase units, before the per-pixel kappa divide. Imported
+    #     here because paper_figures itself imports this module. ---
+    from .download_paper_data import pair_of
+    from .paper_figures import _snotel_swe, _swe_change
+    _, ref, sec = pair_of(gunw_path or paths.gunw_product())
+    dswe_metres, xs, ys, _, _ = _swe_change(gunw_path or paths.gunw_product(), ref, sec, _snotel_swe())
+    assert np.allclose(xs, phase.x.values) and np.allclose(ys, phase.y.values), "dSWE is on the phase grid"
 
     # --- NIVAL lidar -> dHS [m] on the same grid (masked=True reads nodata as NaN) ---
     snow_depth_later = rioxarray.open_rasterio(lidar_b or paths.LIDAR_A22, masked=True).squeeze()
@@ -131,14 +133,6 @@ def build_product(gunw_path=None, lidar_a=None, lidar_b=None, out_path=None):
         (snow_depth_change > -DHS_GATE_M) & (snow_depth_change < DHS_GATE_M))
     snow_depth_change = snow_depth_change.rio.write_nodata(np.nan)   # so resampling fills gaps with NaN, not a sentinel
     dhs_metres = snow_depth_change.rio.reproject_match(phase, resampling=Resampling.average).values
-
-    # --- set the absolute SWE datum (a different d.o.f. than the phase offset above): shift
-    #     dSWE by one constant so its scene median matches the lidar-implied SWE (dHS *
-    #     new-snow density). A pure offset -- pattern + correlation unchanged. ---
-    both_finite = np.isfinite(dswe_metres) & np.isfinite(dhs_metres)
-    lidar_swe = dhs_metres * SNOW_DENSITY / WATER_DENSITY
-    reference = np.nanmedian(lidar_swe[both_finite] - dswe_metres[both_finite])
-    dswe_metres = dswe_metres + reference
 
     # --- assemble + save the one product ---
     product = xr.Dataset(

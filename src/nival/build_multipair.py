@@ -1,7 +1,7 @@
 """Build the dSWE/dHS product of every track-077 pair -> outputs/retrieval_multipair/.
 
 Each pair goes through retrieval.build_product(), the same computation as the analysed
-pair, with its own operational GUNW and the two lidar flights pairs.py lists for it. The
+pair, with its own GUNW (ours from refocused RSLCs where there is one) and the two lidar flights pairs.py lists for it. The
 lidar row of Fig. 3 and the supplement's pair census and Table S1 read these files. Fetch
 the inputs first with download_paper_data.py. Idempotent: existing products are skipped.
 
@@ -12,7 +12,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))   # the src/ dir
 from nival import paths, retrieval   # noqa: E402
-from nival.download_paper_data import TRACK, gunw_file, lidar_file   # noqa: E402
+from nival.download_paper_data import TRACK, lidar_file, pair_gunw   # noqa: E402
 from nival.pairs import label, on_track   # noqa: E402
 
 PRODUCTS = paths.OUTPUTS / "retrieval_multipair"
@@ -24,7 +24,7 @@ def main():
         if out.exists():
             print(f"  skip (exists): {out.relative_to(paths.ROOT)}")
             continue
-        gunw = gunw_file(pair)
+        gunw = pair_gunw(pair)                      # our refocused GUNW where there is one
         if gunw is None:
             raise SystemExit(f"missing GUNW for {label(pair)}\n"
                              "  fetch it with: python src/nival/download_paper_data.py")

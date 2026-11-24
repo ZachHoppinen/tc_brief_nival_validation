@@ -19,7 +19,7 @@ FIGURES_DIR = ROOT / "figures"  # the rendered figure PNGs
 # --- generated outputs ---
 GUNW_DIR = OUTPUTS / "gunw"          # holds the scene DEM (SUBSET_DEM)
 PRODUCTS_DIR = OUTPUTS / "retrieval"  # retrieval.build_product writes dswe_dhs_operational.nc
-SUBSET_DEM = GUNW_DIR / "dem_subset.tif"  # AOI Copernicus GLO-30 staged by download_paper_data;
+SUBSET_DEM = GUNW_DIR / "dem_subset.tif"  # AOI NISAR DEM staged by download_paper_data;
 #                                           the scene DEM for LIA too (retrieval + maps)
 
 # --- input data (assumed present under data/) ---
@@ -40,6 +40,20 @@ GUNW_OPERATIONAL = DATA / "gunw_operational" / (
 # GUNW crops we produced ourselves from refocused RSLCs, over the lidar domain + 10 km. They
 # cannot be downloaded: copied by hand into data/gunw_refocused/. Fig. 3 reads the two track-077 ones.
 GUNW_REFOCUSED = DATA / "gunw_refocused"
+
+
+# Radar-geometry HH amplitude windows over the AOI, cut from production RSLCs (streamed from
+# ASF) and from our refocused RSLC (on our S3 bucket). Staged by hand in data/rslc_windows/ as
+# <track>_<date>_{production,refocus}.npz; Fig. S1 reads them.
+RSLC_WINDOWS = DATA / "rslc_windows"
+REFOCUS_EXAMPLE = ("077", "20260114")            # the acquisition Fig. S1 shows as production and as refocused
+REFOCUS_STANDARD = ("20251221", "20260207")      # production RSLCs of the same track averaged as the usual amplitude
+L0B_STAMPS = DATA / "l0b_stamps"                 # pulse time stamps of the track-077 raw (L0B) granules, one npz per granule
+STAMPS_FAULTY = L0B_STAMPS / "NISAR_L0_PR_RRSD_010_077_A_156S_20260114T124024_20260114T125436_P05023_F_J_002.npz"
+STAMPS_CLEAN = L0B_STAMPS / "NISAR_L0_PR_RRSD_012_077_A_156S_20260207T124025_20260207T125437_P05023_F_J_002.npz"
+STAMPS_CONTROL = L0B_STAMPS / "NISAR_L0_PR_RRSD_008_077_A_156S_20251221T124023_20251221T125435_P05023_F_J_002.npz"   # Dec 21, a second clean date
+STAMP_SHIFT = 2169                               # rows the Jan 14 stamps were moved back before refocusing
+FRAME_UTC = (45978.0, 46013.0)                   # frame 024 on Jan 14, 12:46:18 to 12:46:53 UTC [s of day]
 
 
 def gunw_product() -> Path:
@@ -68,6 +82,7 @@ MET_SOIL = MET_DIR / "freeman_minfifteen_clean.csv"      # full Freeman export: 
 SNOTEL_SNAP = REMOTE_DIR / "snotel_637_06local.csv"      # SNOTEL 637 SWE/temp/depth at 06:00
 SNOTEL_SEASON = REMOTE_DIR / "snotel_637_season.csv"     # SNOTEL 637 daily depth, whole WY2026
 SNOTEL_PTEMP = REMOTE_DIR / "snotel_637_ptemp.csv.gz"    # SNOTEL 637 hourly snow temperature profile (degC)
+SNOTEL_AIR_TEMP = REMOTE_DIR / "snotel_637_air_temp.csv"   # SNOTEL 637 hourly air temperature (degC, UTC)
 SEASON_D0, SEASON_D1 = "2025-10-01", "2026-04-30"        # the wetness census window
 IONEX_DIR = REMOTE_DIR / "ionex"                         # IGS GIM .INX files (one per day-of-year)
 BASEMAP_PNG = REMOTE_DIR / "naip_basemap.png"            # USGS NAIP RGB mosaic over the AOI
@@ -75,7 +90,7 @@ BASEMAP_META = REMOTE_DIR / "naip_basemap.json"          # its UTM extent
 FIRE_GEOJSON = REMOTE_DIR / "pioneer_fire_2016.geojson"  # NIFC Pioneer Fire perimeter
 
 # --- physics / geometry constants (Leinss 2015, NISAR L-band) ---------------
-LAMBDA = 0.238          # NISAR L-band carrier wavelength (m)
+LAMBDA = 299_792_458 / 1.239e9   # wavelength (m) at the GUNW frequencyA centre frequency, 1239 MHz: 0.242 m
 EPSG = 32611            # UTM zone 11N (study-area projection)
 
 # --- Mores Creek AOI (the radar-grid crop window for the SAS prep) -----------

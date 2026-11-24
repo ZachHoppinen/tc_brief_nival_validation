@@ -2,7 +2,7 @@
 
   context_figure()  -> fig1_context.png : study-area map, then season-long snow depth + snowpack temp
   results_figure()  -> fig2_results.png : scene dSWE/dHS maps + density hexbin
-  swe_timeline_figure() -> fig3_swe_timeline.png : SWE change per pair along the season, lidar, SNOTEL, totals
+  swe_timeline_figure() -> fig3a_pair_timeline.png, fig3b_season_totals.png : SWE change per pair with SNOTEL and lidar; season totals
 
 Laid out top to bottom as: the map draw helpers and shared colour caps, the met-series
 readers and panel builders, the study-area map, then the three figures. paper_stats and
@@ -100,6 +100,12 @@ def density_fit(ax, depth_m, swe_mm, loc, fontsize=9):
     return slope, intercept
 
 
+def panel_letter(ax, letter, fontsize=12):
+    """Write a bold panel letter, like (a), just above the upper right corner of the axis, clear of the data."""
+    ax.text(1.0, 1.015, f"({letter})", transform=ax.transAxes, ha="right", va="bottom", fontsize=fontsize,
+            fontweight="bold")
+
+
 def count_colorbar(colorbar):
     """Label a density scatter's colour bar and show plain counts on its log scale instead of
     powers of ten. Only 1, 2 and 5 in each decade are labelled, so the labels do not collide."""
@@ -121,7 +127,7 @@ def add_contours(ax, elevation, extent, levels, index_metres):
 
 
 EPSG = paths.EPSG
-NISAR_COLOR, LIDAR_COLOR = "#c81d4e", "#6a4c93"
+NISAR_COLOR, LIDAR_COLOR = "#1db954", "#8f3fe0"
 
 
 # ======================= met time series: read the data ========================
@@ -314,7 +320,7 @@ def mark_acquisitions(ax, top=False, pad=1.0, nisar=None, lidar=None):
     for date in nisar:
         ax.axvline(date, color=NISAR_COLOR, lw=1.1, alpha=0.85, zorder=1)
     for date in lidar:
-        ax.axvline(date, color=LIDAR_COLOR, lw=1.5, alpha=0.85, ls=(0, (4, 3)), zorder=1)
+        ax.axvline(date, color=LIDAR_COLOR, lw=2.1, alpha=0.85, ls=(0, (4, 3)), zorder=1)
     if not top:
         return
     y_nisar, y_arrow, y_pair, y_lidar = (1.0 + h * pad for h in (0.18, 0.21, 0.235, 0.29))
@@ -370,7 +376,7 @@ def panel_air_temperature(ax, data):
 def acq_legend_handles():
     """NISAR (red) + Lidar (purple dashed) line proxies matching mark_acquisitions."""
     return [Line2D([], [], color=NISAR_COLOR, lw=1.1, label="NISAR"),
-            Line2D([], [], color=LIDAR_COLOR, lw=1.5, ls=(0, (3, 2)), label="Lidar")]   # denser dash fills the handle
+            Line2D([], [], color=LIDAR_COLOR, lw=2.1, ls=(0, (3, 2)), label="Lidar")]   # denser dash fills the handle
 
 
 def panel_swe(ax, data, mark_acq=False):
@@ -448,14 +454,15 @@ def panel_ionosphere(ax, data):
 
 # ============================ study-area map (fig 1) ============================
 MAP_DX = 12.0                                          # contour-grid posting (m)
-FOOT_PAD = 0.004                                       # lon/lat margin around the lidar footprint
+FOOT_PAD = 0.003                                       # lon/lat margin around the lidar footprint
 MORES_LL = (-115.6667, 43.9333)                        # Idaho locator dot
 SNOTEL_LL = (-115.66588, 43.932)                       # Mores Creek Summit #637, from the NRCS AWDB station record
 MET_STATIONS = [(-115.7018528, 43.94091389, "Freeman Peak"),
                 (-115.687, 43.960080, "Pilot Peak")]
 NAIP_URL = ("https://imagery.nationalmap.gov/arcgis/rest/services/"
             "USGSNAIPImagery/ImageServer/exportImage")
-FIRE_C, MET_C = "#ff5722", "white"
+LIDAR_OUTLINE_C, MET_C = LIDAR_COLOR, "white"   # lidar coverage outline on every map: the lidar purple; met stations
+FIRE_C = "#ff5722"                             # Pioneer Fire colour, only used by the retired figures in old/
 
 
 def _grid(aoi):
@@ -485,7 +492,11 @@ def lidar_footprint():
     mask = gaussian_filter(covered.astype(float), 1.2)
     xs, ys = coverage.x.values, coverage.y.values
     extent = [xs[0], xs[-1], ys[-1], ys[0]]
-    minx, miny, maxx, maxy = coverage.rio.bounds()
+    # bounds of the covered cells themselves, not of the raster they sit in, so the map hugs the footprint
+    rows, cols = np.where(covered)
+    half = 50.0                                               # half of the 100 m coverage cell
+    minx, maxx = xs[cols.min()] - half, xs[cols.max()] + half
+    miny, maxy = ys[rows.max()] - half, ys[rows.min()] + half
     to_lonlat = Transformer.from_crs(EPSG, 4326, always_xy=True).transform
     corners = [to_lonlat(minx, miny), to_lonlat(maxx, miny), to_lonlat(maxx, maxy), to_lonlat(minx, maxy)]
     bbox = (min(c[0] for c in corners), min(c[1] for c in corners),
@@ -542,7 +553,8 @@ def fetch_naip(extent, max_px=4000):
 
 
 def pioneer_perimeter():
-    """Pioneer Fire (2016) perimeter (UTM exterior rings + polygon) from the frozen geojson."""
+    """Pioneer Fire (2016) perimeter (UTM exterior rings + polygon) from the frozen geojson.
+    No longer drawn on Fig. 1; kept for the retired figures in old/."""
     from shapely.geometry import shape
     from shapely.ops import transform as shp_transform, unary_union
     geojson = json.loads(paths.FIRE_GEOJSON.read_text())
@@ -576,8 +588,9 @@ def sar_geometry():
     return (look_azimuth - 90.0) % 360.0, look_azimuth, np.degrees(np.arccos(los_up))
 
 
-def sar_geometry_inset(ax, rect, track="077"):
-    """Acquisition-geometry inset: flight track (black) + left-looking imaging arrow (blue)."""
+def sar_geometry_inset(ax, rect, track="077", scale=1.0):
+    """Acquisition-geometry inset: flight track (black) + left-looking imaging arrow (blue).
+    `scale` shrinks the text and line weights for a smaller box."""
     flight_az, look_az, incidence = sar_geometry()
     inset = ax.inset_axes(rect)
     inset.set_xlim(-1.25, 1.25); inset.set_ylim(-1.55, 1.25); inset.set_aspect("equal")
@@ -586,27 +599,27 @@ def sar_geometry_inset(ax, rect, track="077"):
         spine.set_edgecolor("k"); spine.set_linewidth(1.0)
     direction = lambda az: (np.sin(np.radians(az)), np.cos(np.radians(az)))
     fx, fy = direction(flight_az)
-    inset.plot([-fx * 0.85, fx * 0.85], [-fy * 0.85, fy * 0.85], color="k", lw=2.2, zorder=3)
+    inset.plot([-fx * 0.85, fx * 0.85], [-fy * 0.85, fy * 0.85], color="k", lw=2.2 * scale, zorder=3)
     inset.annotate("", xy=(fx * 0.95, fy * 0.95), xytext=(fx * 0.6, fy * 0.6),
-                   arrowprops=dict(arrowstyle="-|>", color="k", lw=2.2, mutation_scale=13), zorder=3)
+                   arrowprops=dict(arrowstyle="-|>", color="k", lw=2.2 * scale, mutation_scale=13 * scale), zorder=3)
     lx, ly = direction(look_az + 180.0)        # imaging/look = sensor->ground (opposite the toward-sat LOS); left-looking here
     inset.annotate("", xy=(lx * 0.78, ly * 0.78), xytext=(0, 0),
-                   arrowprops=dict(arrowstyle="-|>", color="#1565c0", lw=2.2, mutation_scale=13), zorder=4)
-    inset.plot(0, 0, "o", color="k", ms=3, zorder=5)
-    inset.text(fx * 1.04, fy * 1.10, "flight\ndirection", color="k", fontsize=7.5, fontweight="bold",
+                   arrowprops=dict(arrowstyle="-|>", color="#1565c0", lw=2.2 * scale, mutation_scale=13 * scale), zorder=4)
+    inset.plot(0, 0, "o", color="k", ms=3 * scale, zorder=5)
+    inset.text(fx * 1.04, fy * 1.10, "flight\ndirection", color="k", fontsize=7.5 * scale, fontweight="bold",
                ha="center", va="center", linespacing=0.9)
-    inset.text(lx * 0.5 - 0.06, ly * 0.5 + 0.32, "imaging\ndirection", color="#1565c0", fontsize=7.5,
+    inset.text(lx * 0.5 - 0.06, ly * 0.5 + 0.32, "imaging\ndirection", color="#1565c0", fontsize=7.5 * scale,
                fontweight="bold", ha="center", va="center", linespacing=0.9)
     inset.annotate("", xy=(-0.95, -0.7), xytext=(-0.95, -1.05),
-                   arrowprops=dict(arrowstyle="-|>", color="k", lw=1.0, mutation_scale=8))
-    inset.text(-0.95, -0.52, "N", color="k", fontsize=9, fontweight="bold", ha="center", va="center")
-    inset.text(0, -1.4, f"NISAR ASC {track}", color="k", fontsize=10,
+                   arrowprops=dict(arrowstyle="-|>", color="k", lw=1.0, mutation_scale=8 * scale))
+    inset.text(-0.95, -0.52, "N", color="k", fontsize=9 * scale, fontweight="bold", ha="center", va="center")
+    inset.text(0, -1.4, f"NISAR ASC {track}", color="k", fontsize=10 * scale,
                fontweight="bold", ha="center")
     return flight_az, look_az, incidence
 
 
 def idaho_locator(ax):
-    """Idaho state outline (Natural Earth) with a red dot on Mores Creek."""
+    """Idaho state outline (Natural Earth) with a white dot on Mores Creek."""
     shapefile = shpreader.natural_earth(resolution="50m", category="cultural", name="admin_1_states_provinces")
     for record in shpreader.Reader(shapefile).records():
         if record.attributes.get("name") != "Idaho":
@@ -615,9 +628,11 @@ def idaho_locator(ax):
         for polygon in (geometry.geoms if geometry.geom_type == "MultiPolygon" else [geometry]):
             x, y = polygon.exterior.xy
             ax.fill(x, y, fc="0.82", ec="0.5", lw=0.8, alpha=0.9)        # light-grey state shape, no surrounding box
-    ax.plot(*MORES_LL, "o", color="red", mec="k", mew=0.6, ms=7, zorder=5)
+    import matplotlib.patheffects as patheffects
+    ax.plot(*MORES_LL, "o", color="white", mec="k", mew=0.6, ms=7, zorder=5)   # white, as the SNOTEL star on the map
     ax.annotate("Mores Ck", MORES_LL, textcoords="offset points", xytext=(7, -2),
-                fontsize=7, color="red", fontweight="bold")
+                fontsize=7, color="white", fontweight="bold",
+                path_effects=[patheffects.withStroke(linewidth=1.5, foreground="k")])   # dark edge, to read on grey
     ax.set_aspect(1 / np.cos(np.radians(45)))
     ax.set_xticks([]); ax.set_yticks([])
     ax.patch.set_visible(False)                                          # no background box behind Idaho
@@ -626,57 +641,51 @@ def idaho_locator(ax):
 
 
 def study_area(ax):
-    """Fig-1 study-area map drawn into `ax`: NAIP basemap + lidar footprint + fire +
+    """Fig-1 study-area map drawn into `ax`: elevation base map + lidar footprint +
     stations + geometry inset (composed by paper_figures.context_figure)."""
-    from shapely.geometry import box as shapely_box
     frame = setup_map_axes(ax)                     # the shared map projection + bounds
     extent, aoi, xs, ys = frame["extent"], frame["aoi"], frame["xs"], frame["ys"]
     lidar_mask, lidar_extent = frame["lidar_mask"], frame["lidar_extent"]
-    elevation = _elevation_on_grid(xs, ys, aoi)
+    # clip the DEM a little wider than the frame, or reprojection leaves gaps along the map edge
+    elevation = _elevation_on_grid(xs, ys, (aoi[0] - 0.01, aoi[1] - 0.01, aoi[2] + 0.01, aoi[3] + 0.01))
     forest = _forest_fraction(xs, ys)
     to_utm = Transformer.from_crs("EPSG:4326", f"EPSG:{EPSG}", always_xy=True).transform
     snotel_x, snotel_y = to_utm(*SNOTEL_LL)
     print(f"grid {elevation.shape} @ {MAP_DX:.0f} m | forest {100*forest:.0f}%")
 
-    ax.imshow(fetch_naip(extent), extent=extent, origin="upper", zorder=0)
+    # elevation as the base map, in the terrain colours without the blue end and with only a
+    # little of the green: the lowest ground starts at a light yellow-green
+    from matplotlib.colors import LinearSegmentedColormap
+    land = LinearSegmentedColormap.from_list("terrain_land", plt.cm.terrain(np.linspace(0.36, 1.0, 256)))
+    base = ax.imshow(elevation, extent=extent, origin="upper", cmap=land, zorder=0)
+    colorbar = ax.figure.colorbar(base, cax=ax.inset_axes([1.02, 0.2, 0.025, 0.6]))
+    colorbar.set_label("Elevation (m)", fontsize=13); colorbar.ax.tick_params(labelsize=11)
 
     lo, hi = np.nanpercentile(elevation, [1, 99])
     levels = np.arange(np.ceil(lo / 100) * 100, hi, 100)
-    ax.contour(elevation, levels=levels, extent=extent, origin="upper", colors="white", linewidths=0.7, alpha=0.45)
-    ax.contour(lidar_mask, levels=[0.5], extent=lidar_extent, origin="upper", colors="cyan", linewidths=1.8)
+    ax.contour(elevation, levels=levels, extent=extent, origin="upper", colors="0.2", linewidths=0.6, alpha=0.4)
+    ax.contour(lidar_mask, levels=[0.5], extent=lidar_extent, origin="upper", colors=LIDAR_OUTLINE_C, linewidths=2.6)
 
-    fire_rings, fire_polygon = pioneer_perimeter()
-    burned = fire_polygon.intersection(shapely_box(extent[0], extent[2], extent[1], extent[3]))
-    for polygon in (burned.geoms if burned.geom_type == "MultiPolygon" else [burned]):
-        if not polygon.is_empty:
-            ax.add_patch(Polygon(np.array(polygon.exterior.coords), closed=True, facecolor=FIRE_C,
-                                 edgecolor="none", alpha=0.16, zorder=1.5))
-    for ring in fire_rings:
-        ax.plot(ring[:, 0], ring[:, 1], color=FIRE_C, lw=2.4, ls="--", zorder=3)
-    frame_box = shapely_box(extent[0], extent[2], extent[1], extent[3])
-    print(f"Pioneer burn covers {100*burned.area/frame_box.area:.0f}% of frame")
-
-    ax.plot(snotel_x, snotel_y, "*", color="yellow", mec="k", mew=1.2, ms=22, zorder=6)
+    ax.plot(snotel_x, snotel_y, "*", color="white", mec="k", mew=1.2, ms=22, zorder=6)
     ax.annotate("SNOTEL 637\n(Mores Ck Summit)", (snotel_x, snotel_y), textcoords="offset points",
-                xytext=(10, 6), fontsize=12, fontweight="bold", color="white")
+                xytext=(10, 6), fontsize=12, fontweight="bold", color="k")
     for lon, lat, label in MET_STATIONS:
         x, y = to_utm(lon, lat)
         ax.plot(x, y, "^", color=MET_C, mec="k", mew=1.2, ms=13, zorder=6)
         ax.annotate(label, (x, y), textcoords="offset points", xytext=(9, 4), fontsize=11,
-                    fontweight="bold", color="white")
+                    fontweight="bold", color="k")
 
     # Fig. 1's map is its largest panel, so its axis text is set larger than the default
     ax.xaxis.label.set_size(13); ax.yaxis.label.set_size(13)
     ax.tick_params(labelsize=11)
 
-    legend = [Line2D([], [], marker="*", color="none", mfc="yellow", mec="k", ms=15, label="SNOTEL 637"),
-              Line2D([], [], color="cyan", lw=1.8, label="Lidar Coverage"),
-              Line2D([], [], color=FIRE_C, lw=2.4, ls="--", label="Pioneer Fire (2016)"),
+    legend = [Line2D([], [], marker="*", color="none", mfc="white", mec="k", ms=15, label="SNOTEL 637"),
+              Line2D([], [], color=LIDAR_OUTLINE_C, lw=2.6, label="Lidar Coverage"),
               Line2D([], [], marker="^", color="none", mfc=MET_C, mec="k", ms=11, label="met station")]
     ax.legend(handles=legend, loc="lower right", fontsize=12, framealpha=0.9)
 
-    idaho_locator(ax.inset_axes([0.01, 0.73, 0.25, 0.25]))
-    flight_az, look_az, incidence = sar_geometry_inset(ax, [0.015, 0.012, 0.27, 0.31])
+    idaho_locator(ax.inset_axes([0.01, 0.755, 0.235, 0.235]))
+    flight_az, look_az, incidence = sar_geometry_inset(ax, [0.012, 0.012, 0.257, 0.295], scale=0.95)
     print(f"SAR geometry: flight {flight_az:.0f}, look {look_az:.0f}, incidence {incidence:.0f} deg (ASC 077)")
 
 
@@ -758,14 +767,6 @@ def context_figure():
     panel_snowpack_temperature(ax_temp, dict(thermo=snowpack_thermograph(start, end)), mark_acq=False)
     mark_acquisitions(ax_temp, nisar=nisar_dates, lidar=lidar_dates)
 
-    # the Fig. 2 pair: a labelled span just above the depth panel, between its two NISAR dates
-    first, second = (dt.date.fromisoformat(d) for d, _ in NISAR)
-    ax_depth.annotate("", xy=(second, 1.06), xytext=(first, 1.06), xycoords=("data", "axes fraction"),
-                      textcoords=("data", "axes fraction"), annotation_clip=False,
-                      arrowprops=dict(arrowstyle="<->", color=NISAR_COLOR, lw=1.6))
-    ax_depth.annotate("Figure 2 Pair", (first + (second - first) / 2, 1.09), xycoords=("data", "axes fraction"),
-                      ha="center", va="bottom", fontsize=10, color=NISAR_COLOR, fontweight="bold",
-                      annotation_clip=False)
 
     # shared date axis across the season
     ax_temp.set_xlim(start, end)
@@ -773,6 +774,10 @@ def context_figure():
     ax_temp.xaxis.set_major_formatter(mdates.DateFormatter("%b %Y"))
     ax_temp.set_xlabel("date")
     plt.setp(ax_depth.get_xticklabels(), visible=False)
+
+    # panel letters, matching the caption
+    for ax, letter in ((ax_map, "a"), (ax_depth, "b"), (ax_temp, "c")):
+        panel_letter(ax, letter, fontsize=14)
 
     out = paths.FIGURES_DIR / "fig1_context.png"
     paths.FIGURES_DIR.mkdir(parents=True, exist_ok=True)
@@ -799,7 +804,7 @@ def _draw_map(ax, field, valid, elev, shade, caps, extent, posting, frame, conto
                       vmin=caps[0], vmax=caps[1], alpha=0.85, origin="upper")
     # the lidar coverage outline, drawn as in Fig. 1
     ax.contour(frame["lidar_mask"], levels=[0.5], extent=frame["lidar_extent"], origin="upper",
-               colors="cyan", linewidths=1.8)
+               colors=LIDAR_OUTLINE_C, linewidths=2.6)
     ax.set_title(title, fontsize=13)
     if not left:                                               # the right map shares the left one's northing axis
         ax.set_ylabel(""); ax.set_yticklabels([])
@@ -875,8 +880,10 @@ def results_figure():
 
 # =============================== figure 3: SWE timeline ===============================
 OURS_COLOR = "#e66100"         # marks the GUNWs we produced with Hyp3-Isce3
-SWE_LIM_MM = 150.0             # timeline colour limit, either side of zero
-LIDAR_LIM_M = 0.75             # timeline lidar depth-change colour limit, either side of zero
+SWE_LIM_MM = 200.0             # timeline colour limit, either side of zero
+LIDAR_LIM_M = 1.0              # timeline lidar depth-change colour limit, either side of zero
+SCREEN_LIM_RAD = np.pi         # timeline colour limit of an atmospheric phase screen, either side of zero
+SCREEN_LABEL = "Phase about scene median (rad)"
 TOTAL_LIM_MM = 700.0           # timeline upper colour limit of the cumulative NISAR SWE map
 DEPTH_LIM_M = 2.0              # timeline upper colour limit of the lidar snow depth map
 
@@ -918,6 +925,66 @@ def _corrected_phase(path):
     return corrected.values, xs, ys
 
 
+def _troposphere_phase(path):
+    """One GUNW's tropospheric phase over the AOI [rad]: the hydrostatic + wet screens sampled
+    at terrain height, which is what _corrected_phase removes. Obtained as the unwrapped phase
+    minus the same phase with only the troposphere taken out by nisar_pytools. Returns the
+    screen and the pixel-centre coordinates of the clip."""
+    from nisar_pytools.processing.atmospheric import correct_atmosphere
+    with h5py.File(path) as f:
+        g = f["science/LSAR/GUNW/grids/frequencyA/unwrappedInterferogram/HH"]
+        rows, cols = retrieval._aoi_window(g["xCoordinates"][:], g["yCoordinates"][:])
+        xs, ys = g["xCoordinates"][cols], g["yCoordinates"][rows]
+        on_grid = lambda values: xr.DataArray(values.astype(float), dims=("y", "x"), coords={"y": ys, "x": xs})
+        unwrapped = on_grid(g["unwrappedPhase"][rows, cols])
+        cubes = f["science/LSAR/GUNW/metadata/radarGrid"]
+        hydrostatic, wet = cubes["hydrostaticTroposphericPhaseScreen"][:], cubes["wetTroposphericPhaseScreen"][:]
+        heights, cube_x, cube_y = cubes["heightAboveEllipsoid"][:], cubes["xCoordinates"][:], cubes["yCoordinates"][:]
+    dem = on_grid(retrieval._elevation_on_grid(xs, ys, paths.AOI))
+    without = correct_atmosphere(unwrapped, hydrostatic, wet, heights, cube_x, cube_y, dem)   # troposphere only
+    return (unwrapped - without).values, xs, ys
+
+
+def _ionosphere_phase(path):
+    """One GUNW's ionospheric phase screen over the AOI [rad], as delivered, and the
+    pixel-centre coordinates of the clip."""
+    with h5py.File(path) as f:
+        g = f["science/LSAR/GUNW/grids/frequencyA/unwrappedInterferogram/HH"]
+        rows, cols = retrieval._aoi_window(g["xCoordinates"][:], g["yCoordinates"][:])
+        return (g["ionospherePhaseScreen"][rows, cols].astype(float),
+                g["xCoordinates"][cols], g["yCoordinates"][rows])
+
+
+def _unwrapped_phase(path):
+    """One GUNW's 80 m unwrapped phase over the AOI [rad], as delivered with no screen removed,
+    and the pixel-centre coordinates of the clip."""
+    with h5py.File(path) as f:
+        g = f["science/LSAR/GUNW/grids/frequencyA/unwrappedInterferogram/HH"]
+        rows, cols = retrieval._aoi_window(g["xCoordinates"][:], g["yCoordinates"][:])
+        return (g["unwrappedPhase"][rows, cols].astype(float),
+                g["xCoordinates"][cols], g["yCoordinates"][rows])
+
+
+# the phase fields the timeline can show in place of SWE change: reader and row name
+SCREENS = {"troposphere": (_troposphere_phase, "Troposphere"), "ionosphere": (_ionosphere_phase, "Ionosphere"),
+           "unwrapped": (_unwrapped_phase, "Unwrapped phase")}
+
+
+def _pi_ticks(colorbar, limit=np.pi):
+    """Tick a phase colour bar at its limits, half its limits and zero, labelled in units of pi."""
+    def name(value):
+        k = value / np.pi
+        if np.isclose(k, 0):
+            return "0"
+        sign, k = ("-" if k < 0 else ""), abs(k)
+        if np.isclose(k, 0.5):
+            return rf"${sign}\pi/2$"
+        return rf"${sign}{'' if np.isclose(k, 1) else f'{k:g}'}\pi$"
+    ticks = [-limit, -limit / 2, 0, limit / 2, limit]
+    colorbar.set_ticks(ticks)
+    colorbar.set_ticklabels([name(t) for t in ticks])
+
+
 def _swe_change(path, ref, sec, snotel_swe):
     """One GUNW's SWE change over the AOI [m], referenced to SNOTEL 637.
 
@@ -952,7 +1019,8 @@ def _swe_change(path, ref, sec, snotel_swe):
 
 
 def timeline_figure(out, tracks=None, last=None, lidar_row=False, to_peak=False, totals=False,
-                    print_width_cm=None):
+                    print_width_cm=None, quantity="swe", swe_panel=True, heading=None,
+                    screen_lim=SCREEN_LIM_RAD, total_lim=SCREEN_LIM_RAD):
     """The SWE change from every GUNW over the scene, one row per track, laid out along a
     shared time axis. Fig. 3 is the track-077 version with every extra switched on
     (swe_timeline_figure); old/figS1_all_tracks.py draws the plain all-track version. Production GUNWs, except where we have a GUNW from refocused
@@ -967,6 +1035,14 @@ def timeline_figure(out, tracks=None, last=None, lidar_row=False, to_peak=False,
     dates, which is how a pair is identified. A panel underneath shows SNOTEL 637 SWE on the
     same time axis. Sized for a full page width: 12 in wide with 8 to 10 pt text.
 
+    `quantity` picks what each pair's map shows: "swe" for the SWE change, or one or more of
+    the atmospheric phase screens the SWE version removes ("troposphere", "ionosphere"), each
+    as its own row of maps about the scene median; their `totals` is one map per screen, the
+    sum over the pairs. "unwrapped" is the observed unwrapped phase, drawn the same way.
+    `screen_lim` and `total_lim` are the colour limits [rad] of the pair maps and of the
+    totals. `swe_panel=False` leaves out the SNOTEL SWE strip. `heading` replaces
+    the figure's default heading.
+
     `out` is the output file. `tracks` keeps only those tracks and `last` ("YYYYMMDD") only
     pairs ending by that date. `print_width_cm` resizes the saved image to that printed width
     at 300 dpi, as the other paper figures are. `lidar_row` adds a row of NIVAL lidar snow-depth change, one map
@@ -976,6 +1052,9 @@ def timeline_figure(out, tracks=None, last=None, lidar_row=False, to_peak=False,
     of the pairs' SWE change, the lidar snow depth of the last date, each in its own units, and
     a scatter of one against the other."""
     from matplotlib.patches import FancyArrowPatch, Patch, Rectangle
+    from matplotlib.patches import Polygon as MplPolygon
+    quantities = (quantity,) if isinstance(quantity, str) else tuple(quantity)
+    screens = quantities != ("swe",)                        # atmospheric screens instead of SWE change
     plt.rcdefaults()                                        # Figs. 1 and 2 set bold titles and sizes; start clean
     gunws = [g for g in local_gunws()                       # (track, ref, sec, path, refocused), date ordered
              if (tracks is None or g[0] in tracks) and (last is None or g[2] <= last)]
@@ -1013,12 +1092,14 @@ def timeline_figure(out, tracks=None, last=None, lidar_row=False, to_peak=False,
     row_h, top = panel_h + 0.50, 0.42 if key_in_row else 0.78   # each row: the maps, then the date labels beneath
     totals_h = 2.6 if totals else 0.0                       # the season-total maps and scatter under the SWE panel
     extra = totals_h + 1.0 if totals else 0.0
-    swe_h, bottom = 1.3, 2.0 + extra                        # the SWE panel and the space it sits in, under the track rows
-    height = top + bottom + row_h * (len(tracks) + bool(lidar_pairs))
+    swe_h = 1.3 if swe_panel else 0.0                       # the SWE panel, under the map rows
+    bottom = (2.0 if swe_panel else 0.25) + extra           # the space the SWE panel and totals sit in
+    rows = [(track, q) for q in quantities for track in tracks]
+    height = top + bottom + row_h * (len(rows) + bool(lidar_pairs))
     x_of = lambda t: (left + (t - t0).days / span_days * (width - left - right)) / width   # date -> figure x
 
     snotel_swe = _snotel_swe()                              # metres, the series Table S1 reads
-    cumulative = None                                       # running sum of the pairs' SWE change, for `totals`
+    sums = {}                                               # running sum of the pairs' fields per quantity, for `totals`
     fig = plt.figure(figsize=(width, height), dpi=300)
 
     def double_outline(ax, middle, y0):
@@ -1030,44 +1111,59 @@ def timeline_figure(out, tracks=None, last=None, lidar_row=False, to_peak=False,
                                  (panel_w + 2 * pad) / width, (panel_h + 2 * pad) / height,
                                  transform=fig.transFigure, fill=False, edgecolor="k", lw=1.0))
 
-    row_y = {}
-    for r, track in enumerate(tracks):
-        y0 = row_y[track] = (height - top - row_h * (r + 1) + 0.40) / height
-        fig.text(0.2 / width, y0 + panel_h / height / 2, f"Track {track}\n{direction[track]}", rotation=90,
+    row_y, nisar_dates, lidar_dates = {}, set(), set()     # the dates drawn, for the SWE strip below
+    for r, (track, q) in enumerate(rows):
+        y0 = (height - top - row_h * (r + 1 + bool(lidar_pairs)) + 0.40) / height   # below the lidar row, if there is one
+        row_y.setdefault(track, y0)
+        row_name = f"{SCREENS[q][1]}\ntrack {track}" if screens else f"NISAR\nTrack {int(track)}"
+        fig.text(0.2 / width, y0 + panel_h / height / 2, row_name, rotation=90,
                  ha="center", va="center", fontsize=9.5, linespacing=1.3)
         # every date a pair on this track starts or ends on, as a dated vertical line behind
         # the maps, so each pair's span can be read off
         row = [g for g in gunws if g[0] == track]
+        nisar_dates |= {day(d) for g in row for d in g[1:3]}
         for date in sorted({day(d) for g in row for d in g[1:3]}):
             x, y_low = x_of(date), y0 - 0.07 / height
             fig.add_artist(Line2D([x, x], [y_low, y0 + panel_h / height], transform=fig.transFigure, zorder=-1,
-                                  color=line_c, lw=0.8))
+                                  color=NISAR_COLOR, lw=1.1))
             fig.text(x, y_low - 0.03 / height, f"{date:%b} {date.day}", ha="center", va="top",
                      fontsize=8, color=line_c)
         for _, ref, sec, path, refocused in row:
-            swe_change, xs, ys, station_xy, log = _swe_change(path, ref, sec, snotel_swe)
-            print(f"  {track} {ref}-{sec}: SNOTEL {log['station_mm']:+6.0f} mm | phase at SNOTEL {log['phase_3x3']:+7.2f} rad "
-                  f"(3x3 median), {log['phase_1px']:+7.2f} (one pixel) | {log['kappa']:.1f} rad/m at LIA {log['lia']:.0f} deg | "
-                  f"map 5-95% {np.nanpercentile(swe_change, 5) * 1000:+.0f} to {np.nanpercentile(swe_change, 95) * 1000:+.0f} mm")
+            if screens:
+                swe_change, xs, ys = SCREENS[q][0](path)        # radians; named for the SWE case it stands in for
+                station_xy = None
+                print(f"  {track} {ref}-{sec}: {q} median {np.nanmedian(swe_change):+.2f} rad, spread 1-99% "
+                      f"{np.nanpercentile(swe_change - np.nanmedian(swe_change), 1):+.2f} to "
+                      f"{np.nanpercentile(swe_change - np.nanmedian(swe_change), 99):+.2f} rad")
+            else:
+                swe_change, xs, ys, station_xy, log = _swe_change(path, ref, sec, snotel_swe)
+                print(f"  {track} {ref}-{sec}: SNOTEL {log['station_mm']:+6.0f} mm | phase at SNOTEL {log['phase_3x3']:+7.2f} rad "
+                      f"(3x3 median), {log['phase_1px']:+7.2f} (one pixel) | {log['kappa']:.1f} rad/m at LIA {log['lia']:.0f} deg | "
+                      f"map 5-95% {np.nanpercentile(swe_change, 5) * 1000:+.0f} to {np.nanpercentile(swe_change, 95) * 1000:+.0f} mm")
             posting = float(abs(xs[1] - xs[0]))
             # xs / ys are pixel centres, so the raster edge sits half a posting beyond them
             extent = [xs.min() - posting / 2, xs.max() + posting / 2, ys.min() - posting / 2, ys.max() + posting / 2]
             middle = x_of(day(ref) + (day(sec) - day(ref)) / 2)
             ax = fig.add_axes([middle - panel_w / width / 2, y0, panel_w / width, panel_h / height])
             setup_map_axes(ax, map_box)                     # the Fig. 1 projection + bounds
-            cumulative = swe_change if cumulative is None else cumulative + swe_change
-            image = ax.imshow(swe_change * 1000, extent=extent, origin="upper",
-                              cmap="RdBu", vmin=-SWE_LIM_MM, vmax=SWE_LIM_MM)   # blue = gain
+            sums[q] = swe_change if q not in sums else sums[q] + swe_change
+            if screens:
+                image = ax.imshow(swe_change - np.nanmedian(swe_change), extent=extent, origin="upper",
+                                  cmap="RdBu_r", vmin=-screen_lim, vmax=screen_lim)
+            else:
+                image = ax.imshow(swe_change * 1000, extent=extent, origin="upper",
+                                  cmap="RdBu", vmin=-SWE_LIM_MM, vmax=SWE_LIM_MM)   # blue = gain
             ax.contour(map_box["lidar_mask"], levels=[0.5], extent=map_box["lidar_extent"],
-                       origin="upper", colors="cyan", linewidths=1.0)   # lidar coverage outline, Fig. 1's colour
-            ax.plot(*station_xy, "*", color="yellow", mec="k", mew=0.5, ms=6)   # the phase reference, as in Fig. 1
+                       origin="upper", colors=LIDAR_OUTLINE_C, linewidths=1.6)   # lidar coverage outline, Fig. 1's colour
+            if station_xy is not None:
+                ax.plot(*station_xy, "*", color="white", mec="k", mew=0.5, ms=6)   # the phase reference, as in Fig. 1
             ax.set_xticks([]); ax.set_yticks([]); ax.set_xlabel(""); ax.set_ylabel("")
             for spine in ax.spines.values():                # a quiet frame unless the pair is singled out below
                 spine.set_edgecolor("0.3"); spine.set_linewidth(0.5)
             if refocused:                                   # the GUNWs we produced: orange frame
                 for spine in ax.spines.values():
                     spine.set_edgecolor(OURS_COLOR); spine.set_linewidth(2.0)
-            if (track, ref, sec) == ANALYSED:               # the Fig. 2 pair
+            if (track, ref, sec) == ANALYSED and not screens:   # the Fig. 2 pair
                 double_outline(ax, middle, y0)
             # a pair longer than one repeat: arrows from the map out to its two dates
             if (day(sec) - day(ref)).days > 12:
@@ -1077,16 +1173,22 @@ def timeline_figure(out, tracks=None, last=None, lidar_row=False, to_peak=False,
                     fig.add_artist(FancyArrowPatch((edge, y_mid), (end, y_mid), transform=fig.transFigure,
                                                    arrowstyle="->", mutation_scale=9, lw=1.0, color="k"))
 
-    # NIVAL lidar snow-depth change, one map per census pair, in the same layout: each map sits
-    # at the middle of its two flight dates, which are drawn as dated lines
+    # NIVAL lidar snow-depth change, one map per census pair, in the same layout and as the top
+    # row: each map sits at the middle of its two flight dates, which are drawn as dated lines,
+    # so it lands roughly above the NISAR pair it is matched with
     if lidar_pairs:
-        y0 = (height - top - row_h * (len(tracks) + 1) + 0.40) / height
-        fig.text(0.2 / width, y0 + panel_h / height / 2, "Lidar snow\ndepth change", rotation=90,
+        y0 = (height - top - row_h + 0.40) / height           # the top row
+        fig.text(0.2 / width, y0 + panel_h / height / 2, "NIVAL Airborne\nLidar", rotation=90,
                  ha="center", va="center", fontsize=9.5, linespacing=1.3)
-        for date in sorted({day(d) for p in lidar_pairs for d in p[3:5]}):
-            x, y_low = x_of(date), y0 - 0.07 / height
+        lidar_dates = {day(d) for p in lidar_pairs for d in p[3:5]}
+        # a map wider than the period it covers gets a span marker beneath it (below), so the
+        # date lines and labels of this row sit lower to leave room for it
+        narrow = [x_of(day(p[4])) - x_of(day(p[3])) < panel_w / width for p in lidar_pairs]
+        stub = 0.24 if any(narrow) else 0.07
+        for date in sorted(lidar_dates):
+            x, y_low = x_of(date), y0 - stub / height
             fig.add_artist(Line2D([x, x], [y_low, y0 + panel_h / height], transform=fig.transFigure, zorder=-1,
-                                  color=line_c, lw=0.8))
+                                  color=LIDAR_COLOR, lw=2.1, ls=(0, (4, 3))))
             fig.text(x, y_low - 0.03 / height, f"{date:%b} {date.day}", ha="center", va="top",
                      fontsize=8, color=line_c)
         # where each map goes: the middle of its two flights. Flights closer together than one
@@ -1112,6 +1214,20 @@ def timeline_figure(out, tracks=None, last=None, lidar_row=False, to_peak=False,
                 spine.set_edgecolor("0.3"); spine.set_linewidth(0.5)
             if pair[:3] == ANALYSED:                        # the lidar flights of the Fig. 2 pair
                 double_outline(ax, middle, y0)
+            # a map wider than the period it covers: a funnel from the map's bottom edge down to
+            # a bar that runs from its first flight to its second, so the map's width is not
+            # read as its span
+            if x_of(second) - x_of(first) < panel_w / width:
+                y_bar, inset = y0 - 0.19 / height, 0.02 / width
+                x1, x2 = x_of(first) + inset, x_of(second) - inset
+                fig.add_artist(MplPolygon([(middle - panel_w / width / 2, y0), (middle + panel_w / width / 2, y0),
+                                           (x2, y_bar), (x1, y_bar)], closed=True, transform=fig.transFigure,
+                                          facecolor=LIDAR_COLOR, alpha=0.22, edgecolor="none"))
+                for top_x, bar_x in ((middle - panel_w / width / 2, x1), (middle + panel_w / width / 2, x2)):
+                    fig.add_artist(Line2D([top_x, bar_x], [y0, y_bar], transform=fig.transFigure,
+                                          color=LIDAR_COLOR, lw=0.9))
+                fig.add_artist(Line2D([x1, x2], [y_bar, y_bar], transform=fig.transFigure, color=LIDAR_COLOR,
+                                      lw=3.0, solid_capstyle="butt"))
             # arrows out to the two flight dates, where the date sits clear of this map and the
             # arrow would not run across a neighbouring map
             y_mid, gap = y0 + panel_h / height / 2, 0.05 / width
@@ -1124,33 +1240,71 @@ def timeline_figure(out, tracks=None, last=None, lidar_row=False, to_peak=False,
                                                    arrowstyle="->", mutation_scale=9, lw=1.0, color="k"))
 
     # SNOTEL 637 SWE under the map rows, on the same time axis as the maps above it
-    ax_swe = fig.add_axes([x_of(t0), (0.5 + extra) / height, x_of(t1) - x_of(t0), swe_h / height])
-    ax_swe.fill_between(swe.index, swe.values * 1000, 0, color="#4c8cbf", alpha=0.20, lw=0)   # Fig. 1's SWE colours
-    ax_swe.plot(swe.index, swe.values * 1000, color="#1f6aa5", lw=1.5)
-    ax_swe.set_xlim(t0, t1); ax_swe.set_ylim(0, None)
-    ax_swe.xaxis.set_major_locator(mdates.MonthLocator())
-    ax_swe.xaxis.set_major_formatter(mdates.DateFormatter("%b %Y"))
-    ax_swe.set_xlabel("date", fontsize=9.5); ax_swe.set_ylabel("SNOTEL 637\nSWE (mm)", fontsize=9.5)
-    ax_swe.tick_params(labelsize=8.5)
-    ax_swe.grid(axis="y", color="0.85", lw=0.6); ax_swe.set_axisbelow(True)
-    ax_swe.spines[["top", "right"]].set_visible(False)
+    if swe_panel:
+        ax_swe = fig.add_axes([x_of(t0), (0.5 + extra) / height, x_of(t1) - x_of(t0), swe_h / height])
+        ax_swe.fill_between(swe.index, swe.values * 1000, 0, color="#4c8cbf", alpha=0.20, lw=0)   # Fig. 1's SWE colours
+        ax_swe.plot(swe.index, swe.values * 1000, color="#1f6aa5", lw=1.5)
+        ax_swe.set_xlim(t0, t1); ax_swe.set_ylim(0, None)
+        ax_swe.xaxis.set_major_locator(mdates.MonthLocator())
+        ax_swe.xaxis.set_major_formatter(mdates.DateFormatter("%b %Y"))
+        ax_swe.set_xlabel("date", fontsize=9.5); ax_swe.set_ylabel("SNOTEL 637\nSWE (mm)", fontsize=9.5)
+        ax_swe.tick_params(labelsize=8.5)
+        ax_swe.grid(axis="y", color="0.85", lw=0.6); ax_swe.set_axisbelow(True)
+        ax_swe.spines[["top", "right"]].set_visible(False)
+        mark_acquisitions(ax_swe, nisar=sorted(nisar_dates), lidar=sorted(lidar_dates))   # as on Fig. 1
 
-    # the colour bar sits beside the NISAR rows only; the lidar row has its own
-    maps_low, maps_high = (bottom + row_h * bool(lidar_pairs)) / height, 1 - top / height
+    # the colour bar sits beside the NISAR rows only; the lidar row, above them, has its own
+    maps_low, maps_high = bottom / height, 1 - (top + row_h * bool(lidar_pairs)) / height
     cax = fig.add_axes([(width - right + 0.3) / width, maps_low + 0.12 * (maps_high - maps_low),
                         0.13 / width, 0.76 * (maps_high - maps_low)])
     colorbar = fig.colorbar(image, cax=cax, extend="both")
-    colorbar.set_label(SWE_CHANGE_LABEL, fontsize=9.5)
+    # the bars beside single rows are short, so their labels break over two lines to stay
+    # within their own row: the same words as SWE_CHANGE_LABEL and DEPTH_CHANGE_LABEL
+    swe_two_lines = SWE_CHANGE.replace(" change", "\nchange") + f" ({SWE_UNIT})"
+    colorbar.set_label(SCREEN_LABEL if screens else swe_two_lines, fontsize=9)
+    if screens:
+        _pi_ticks(colorbar, screen_lim)
     cax.tick_params(labelsize=8.5)
+    cumulative = sums.get("swe")                            # the SWE total, for the season maps below
     if lidar_pairs:
         cax = fig.add_axes([(width - right + 0.3) / width, y0, 0.13 / width, panel_h / height])
         colorbar = fig.colorbar(lidar_image, cax=cax, extend="both")
-        colorbar.set_label(f"{DEPTH}\nchange ({DEPTH_UNIT})", fontsize=9.5)   # DEPTH_CHANGE_LABEL, broken to fit the short bar
+        colorbar.set_label(f"{DEPTH}\nchange ({DEPTH_UNIT})", fontsize=9)
+        cax.tick_params(labelsize=8.5)
+
+    # screens version: one total per screen, the sum of that screen over the pairs
+    if totals and screens:
+        row = [g for g in gunws if g[0] == tracks[0]]
+        assert len(tracks) == 1 and all(a[2] == b[1] for a, b in zip(row[:-1], row[1:])), \
+            "totals need one track whose pairs chain end to end"
+        nice_day = lambda stamp: f"{day(stamp):%b} {day(stamp).day}"
+        map_w, gap_in = totals_h / box_aspect, 0.6
+        x_start = left + (width - left - right - len(quantities) * map_w - (len(quantities) - 1) * gap_in) / 2
+        for k, q in enumerate(quantities):
+            relative = sums[q] - np.nanmedian(sums[q])
+            print(f"  cumulative {q}: median {np.nanmedian(sums[q]):+.2f} rad, spread 1-99% "
+                  f"{np.nanpercentile(relative, 1):+.2f} to {np.nanpercentile(relative, 99):+.2f} rad")
+            x_map = x_start + k * (map_w + gap_in)
+            ax = fig.add_axes([x_map / width, 0.3 / height, map_w / width, totals_h / height])
+            setup_map_axes(ax, map_box)                     # the Fig. 1 projection + bounds
+            total_image = ax.imshow(relative, extent=extent, origin="upper", cmap="RdBu_r",
+                                    vmin=-total_lim, vmax=total_lim)
+            ax.contour(map_box["lidar_mask"], levels=[0.5], extent=map_box["lidar_extent"],
+                       origin="upper", colors=LIDAR_OUTLINE_C, linewidths=1.6)
+            ax.set_xticks([]); ax.set_yticks([]); ax.set_xlabel(""); ax.set_ylabel("")
+            ax.set_title(f"Cumulative {SCREENS[q][1].lower()},\n{nice_day(row[0][1])} to {nice_day(row[-1][2])}",
+                         fontsize=9.5)
+        # one colour bar for the totals, beside the last map
+        cax = fig.add_axes([(x_map + map_w + 0.12) / width, (0.3 + 0.1 * totals_h) / height,
+                            0.12 / width, 0.8 * totals_h / height])
+        colorbar = fig.colorbar(total_image, cax=cax, extend="both")
+        colorbar.set_label(SCREEN_LABEL, fontsize=9.5)
+        _pi_ticks(colorbar, total_lim)
         cax.tick_params(labelsize=8.5)
 
     # two season totals under the SWE panel, each in what its instrument measures: the summed
     # NISAR SWE change, and the lidar snow depth of the last date. No density is assumed.
-    if totals:
+    if totals and not screens:
         row = [g for g in gunws if g[0] == tracks[0]]
         assert len(tracks) == 1 and all(a[2] == b[1] for a, b in zip(row[:-1], row[1:])), \
             "totals need one track whose pairs chain end to end"
@@ -1176,8 +1330,8 @@ def timeline_figure(out, tracks=None, last=None, lidar_row=False, to_peak=False,
             setup_map_axes(ax, map_box)                     # the Fig. 1 projection + bounds
             total_image = ax.imshow(field, extent=extent, origin="upper", cmap=cmocean.cm.ice, vmin=0, vmax=limit)
             ax.contour(map_box["lidar_mask"], levels=[0.5], extent=map_box["lidar_extent"],
-                       origin="upper", colors="cyan", linewidths=1.0)
-            ax.plot(*station_xy, "*", color="yellow", mec="k", mew=0.5, ms=9)
+                       origin="upper", colors=LIDAR_OUTLINE_C, linewidths=1.6)
+            ax.plot(*station_xy, "*", color="white", mec="k", mew=0.5, ms=9)
             ax.set_xticks([]); ax.set_yticks([]); ax.set_xlabel(""); ax.set_ylabel("")
             ax.set_title(title, fontsize=9.5)
             # each map has its own colour bar: the two are in different units
@@ -1206,15 +1360,22 @@ def timeline_figure(out, tracks=None, last=None, lidar_row=False, to_peak=False,
 
     # one key for the whole figure
     place = (dict(loc="center left", bbox_to_anchor=(x_of(t0), row_y[late] + panel_h / height / 2)) if key_in_row
-             else dict(loc="upper left", bbox_to_anchor=(x_of(t0) - 0.08 / width, 1 - 0.36 / height), ncol=5, columnspacing=1.5))
-    fig.legend(handles=[Patch(facecolor="none", edgecolor=OURS_COLOR, lw=2.0, label="Hyp3-Isce3 produced GUNW"),
-                        Patch(facecolor="none", edgecolor="k", lw=1.0, label="Figure 2 Pair (double outline)"),
-                        Line2D([], [], color="cyan", lw=1.0, label="lidar coverage"),
-                        Line2D([], [], marker="*", color="none", mfc="yellow", mec="k", mew=0.5, ms=8,
-                               label="SNOTEL 637 (reference)"),
-                        Line2D([], [], color=line_c, lw=0.8, label="acquisition date")],
-               fontsize=8.5, frameon=False, handlelength=1.8, labelspacing=0.5, **place)
-    fig.text(x_of(t0), 1 - 0.12 / height, SWE_CHANGE, ha="left", va="top", fontsize=12, fontweight="bold")
+             else dict(loc="upper left", bbox_to_anchor=(x_of(t0) - 0.08 / width, 1 - 0.36 / height), ncol=6, columnspacing=1.2))
+    handles = [Patch(facecolor="none", edgecolor=OURS_COLOR, lw=2.0, label="Hyp3-Isce3 produced GUNW"),
+               Patch(facecolor="none", edgecolor="k", lw=1.0, label="Figure 2 Pair (double outline)"),
+               Line2D([], [], color=LIDAR_OUTLINE_C, lw=1.6, label="lidar coverage"),
+               Line2D([], [], marker="*", color="none", mfc="white", mec="k", mew=0.5, ms=8,
+                      label="SNOTEL 637 (reference)"),
+               Line2D([], [], color=NISAR_COLOR, lw=1.1, label="NISAR acquisition")]
+    if lidar_pairs:
+        handles.append(Line2D([], [], color=LIDAR_COLOR, lw=2.1, ls=(0, (3, 2)), label="lidar flight"))
+    if screens:                                             # the screens version: refocused pairs, lidar outline, acquisitions
+        handles = [Patch(facecolor="none", edgecolor=OURS_COLOR, lw=2.0, label="formed from the refocused Jan 14 image"),
+                   handles[2], handles[4]]
+    fig.legend(handles=handles, fontsize=8.5, frameon=False, handlelength=1.8, labelspacing=0.5, **place)
+    default_heading = "NISAR atmospheric phase screens" if screens else SWE_CHANGE
+    fig.text(x_of(t0), 1 - 0.12 / height, heading or default_heading, ha="left", va="top", fontsize=12,
+             fontweight="bold")
     out.parent.mkdir(parents=True, exist_ok=True)
     if print_width_cm:
         _save_print(fig, out, print_width_cm)
@@ -1224,10 +1385,236 @@ def timeline_figure(out, tracks=None, last=None, lidar_row=False, to_peak=False,
 
 
 def swe_timeline_figure():
-    """Fig. 3: track 077 from Nov 3 to Mar 15 as SWE change per pair, the NIVAL lidar depth
-    change of the matching flights, SNOTEL SWE through its peak, and the season totals."""
-    timeline_figure(paths.FIGURES_DIR / "fig3_swe_timeline.png", tracks=[TRACK], last=paths.FIG3_LAST,
-                    lidar_row=True, to_peak=True, totals=True, print_width_cm=18)
+    """Fig. 3, split in two as a test: the pair timeline here, the season totals in
+    _season_totals_figure(), which this calls with the summed NISAR SWE change.
+
+    Top row, the NISAR SWE change of every track 077 pair from Nov 3 to Mar 15: the maps are
+    evenly spaced, and a funnel ties each one down to its two acquisition dates on the thin
+    SNOTEL SWE strip beneath. Bottom row, the NIVAL lidar snow-depth change of the flights
+    matched to each NISAR pair in pairs.py: each map sits under its NISAR pair, with a funnel
+    up to its two flight dates on the bottom of the same strip. The Dec 3 to Dec 13 lidar pair
+    is left out."""
+    from matplotlib.patches import FancyArrowPatch
+    from matplotlib.patches import Polygon as MplPolygon
+    plt.rcdefaults()                                        # Figs. 1 and 2 set bold titles and sizes; start clean
+    day = pd.Timestamp
+    nice_day = lambda stamp: f"{day(stamp):%b} {day(stamp).day}"
+
+    # the pairs, the lidar flights matched to them, and the SWE record
+    gunws = [g for g in local_gunws() if g[0] == TRACK and g[2] <= paths.FIG3_LAST]
+    assert all(a[2] == b[1] for a, b in zip(gunws[:-1], gunws[1:])), "the pairs must chain end to end"
+    lidar_pairs = sorted((p for p in PAIRS if p[0] == TRACK and p[2] <= paths.FIG3_LAST
+                          and (PRODUCTS / f"{label(p)}.nc").exists()), key=lambda p: p[3])
+    lidar_pairs = [p for p in lidar_pairs if p[3] != "20251203"]   # the Dec 3 to Dec 13 flights are not shown
+    season = pd.read_csv(paths.SNOTEL_SEASON, parse_dates=["date"])
+    swe = pd.Series(season["wteq_in"].values * 0.0254, index=season["date"]).sort_index()   # inches -> metres at ingest
+    if swe.max() > 3.0:
+        raise ValueError("SNOTEL SWE is not plausible in metres; check units")
+    t0, t1 = season_span()
+    snotel_swe = _snotel_swe()                              # metres, the series Table S1 reads
+    map_box = map_frame()                                   # one shared frame for every map
+    box_aspect = (map_box["extent"][3] - map_box["extent"][2]) / (map_box["extent"][1] - map_box["extent"][0])
+
+    # figure geometry in inches, measured from the top edge
+    width, left, right = 12.0, 0.75, 1.25
+    usable = width - left - right
+    span_days = (t1 - t0).days
+    pitch = usable / len(gunws)                             # NISAR: one evenly spaced column per pair
+    map_w = 0.88 * pitch
+    map_h = map_w * box_aspect
+    lidar_w, lidar_h = map_w, map_h                         # lidar maps match the NISAR maps they sit over
+    top, funnel_h, strip_h = 0.66, 0.36, 0.75                # the top holds the key and the NISAR date row
+    y_nisar = top + map_h                                   # bottom of the NISAR maps
+    y_strip_top = y_nisar + funnel_h
+    y_strip = y_strip_top + strip_h                         # bottom of the thin SWE strip
+    y_lidar_top = y_strip + funnel_h                        # room for the lidar funnels
+    y_lidar = y_lidar_top + lidar_h                         # bottom of the lidar maps
+    height = y_lidar + 0.34                                 # room for the lidar date row
+    fx = lambda inches: inches / width                      # inches from the left -> figure fraction
+    fy = lambda inches: 1 - inches / height                 # inches from the top -> figure fraction
+    x_of = lambda t: fx(left + (day(t) - t0).days / span_days * usable)   # date -> figure x on the time axis
+    column_x = lambda k: left + (k + 0.5) * pitch           # centre of NISAR column k [in]
+
+    fig = plt.figure(figsize=(width, height), dpi=300)
+
+    def draw_map(x_centre, y_bottom, w, h, field, extent, limit):
+        """One pair-change map centred at x_centre [in], in the Fig. 1 frame. Blue is gain."""
+        ax = fig.add_axes([fx(x_centre - w / 2), fy(y_bottom), fx(w), h / height])
+        setup_map_axes(ax, map_box)
+        image = ax.imshow(field, extent=extent, origin="upper", cmap="RdBu", vmin=-limit, vmax=limit)
+        ax.set_xticks([]); ax.set_yticks([]); ax.set_xlabel(""); ax.set_ylabel("")
+        for spine in ax.spines.values():                    # a quiet frame
+            spine.set_edgecolor("0.3"); spine.set_linewidth(0.5)
+        return ax, image
+
+    def funnel(x_centre, w, y_map_edge, y_axis_edge, first, second, colour):
+        """Shaded funnel from a map's edge to the two dates it spans on the time axis."""
+        corners = [(fx(x_centre - w / 2), fy(y_map_edge)), (fx(x_centre + w / 2), fy(y_map_edge)),
+                   (x_of(second), fy(y_axis_edge)), (x_of(first), fy(y_axis_edge))]
+        fig.add_artist(MplPolygon(corners, closed=True, transform=fig.transFigure, facecolor=colour, alpha=0.18,
+                                  edgecolor="none", zorder=-2))
+        for a, b in ((corners[0], corners[3]), (corners[1], corners[2])):
+            fig.add_artist(Line2D([a[0], b[0]], [a[1], b[1]], transform=fig.transFigure, color=colour, lw=0.8, zorder=-1))
+
+    # NISAR row, on top, each map tied down to its two acquisition dates on the SWE strip
+    cumulative = None
+    for k, (track, ref, sec, path, ours) in enumerate(gunws):
+        swe_change, xs, ys, station_xy, log = _swe_change(path, ref, sec, snotel_swe)
+        print(f"  {ref}-{sec}: SNOTEL {log['station_mm']:+6.0f} mm | map 5-95% {np.nanpercentile(swe_change, 5) * 1000:+.0f} "
+              f"to {np.nanpercentile(swe_change, 95) * 1000:+.0f} mm")
+        cumulative = swe_change if cumulative is None else cumulative + swe_change
+        posting = float(abs(xs[1] - xs[0]))
+        # xs / ys are pixel centres, so the raster edge sits half a posting beyond them
+        extent = [xs.min() - posting / 2, xs.max() + posting / 2, ys.min() - posting / 2, ys.max() + posting / 2]
+        # show NISAR only inside the lidar footprint: look the footprint mask up at each pixel centre
+        mask, (m_x0, m_x1, m_y0, m_y1) = map_box["lidar_mask"], map_box["lidar_extent"]
+        cols = np.floor((xs - m_x0) / (m_x1 - m_x0) * mask.shape[1]).astype(int)
+        rows = np.floor((m_y1 - ys) / (m_y1 - m_y0) * mask.shape[0]).astype(int)
+        on_mask = ((rows >= 0) & (rows < mask.shape[0]))[:, None] & ((cols >= 0) & (cols < mask.shape[1]))[None, :]
+        inside = on_mask & (mask[np.clip(rows, 0, mask.shape[0] - 1)][:, np.clip(cols, 0, mask.shape[1] - 1)] > 0.5)
+        ax, nisar_image = draw_map(column_x(k), y_nisar, map_w, map_h, np.where(inside, swe_change * 1000, np.nan),
+                                   extent, SWE_LIM_MM)
+        ax.plot(*station_xy, "*", color="white", mec="k", mew=0.5, ms=7)   # the phase reference, as in Fig. 1
+        funnel(column_x(k), map_w, y_nisar, y_strip_top, ref, sec, NISAR_COLOR)
+
+    # lidar row, at the bottom: each map sits under the NISAR pair it is matched with, and a funnel
+    # runs from its top edge up to its two flight lines on the time axis
+    nisar_dates = sorted({day(d) for g in gunws for d in g[1:3]})
+    flight_dates = sorted({day(d) for p in lidar_pairs for d in p[3:5]})
+    column_of = {g[:3]: k for k, g in enumerate(gunws)}     # NISAR pair -> its column
+    for pair in lidar_pairs:
+        centre = column_x(column_of[pair[:3]])
+        ds = xr.open_dataset(PRODUCTS / f"{label(pair)}.nc")   # dhs: later flight minus earlier, on the 80 m grid [m]
+        ax, lidar_image = draw_map(centre, y_lidar, lidar_w, lidar_h, ds["dhs"].values, extent, LIDAR_LIM_M)
+        funnel(centre, lidar_w, y_lidar_top, y_strip, pair[3], pair[4], LIDAR_COLOR)
+
+    # the time axis: a thin SNOTEL 637 SWE strip between the rows, with every acquisition and flight marked
+    ax_swe = fig.add_axes([fx(left), fy(y_strip), fx(usable), strip_h / height])
+    # SNOTEL SWE as a light grey line, with a fine grid of light grey speckles beneath it
+    peak_mm = swe.max() * 1000
+    spacing = 0.03                                          # speckle spacing on the page [in]
+    grid_day = np.arange(0, span_days, span_days * spacing / usable)   # days after t0
+    grid_mm = np.arange(0, peak_mm, peak_mm * spacing / strip_h)[1:]
+    speck_day, speck_mm = [values.ravel() for values in np.meshgrid(grid_day, grid_mm)]
+    curve_mm = np.interp(speck_day, (swe.index - t0).days, swe.values * 1000)
+    under = speck_mm < curve_mm
+    ax_swe.scatter(t0 + pd.to_timedelta(speck_day[under], unit="D"), speck_mm[under], s=0.5, color="0.72", lw=0)
+    ax_swe.plot(swe.index, swe.values * 1000, color="0.6", lw=1.5)
+    ax_swe.set_xlim(t0, t1); ax_swe.set_ylim(0, None)
+    # a tick at each month start; only January and March are labelled, above the axis
+    ax_swe.set_xticks([day("2025-12-01"), day("2026-01-01"), day("2026-02-01"), day("2026-03-01")])
+    ax_swe.set_xticklabels(["", "Jan 2026", "", "Mar 2026"])
+    ax_swe.tick_params(axis="x", direction="in", pad=-12.5)
+    ax_swe.set_ylabel("SNOTEL 637\nSWE (mm)", fontsize=9.5)   # the month ticks need no axis label
+    ax_swe.set_yticks([0, 150, 300])
+    ax_swe.tick_params(labelsize=9.5)
+    ax_swe.grid(axis="y", color="0.85", lw=0.6); ax_swe.set_axisbelow(True)
+    ax_swe.spines[["top", "right"]].set_visible(False)
+    mark_acquisitions(ax_swe, nisar=nisar_dates, lidar=flight_dates)   # as on Fig. 1
+
+    # the dates of each row, written between its maps with an arrow across each map: NISAR
+    # acquisitions above the NISAR row, lidar flights below the lidar row
+    first_lidar_column = column_of[lidar_pairs[0][:3]]
+    for dates, first_column, y, colour in ((nisar_dates, 0, top - 0.14, NISAR_COLOR),
+                                           (flight_dates, first_lidar_column, y_lidar + 0.15, LIDAR_COLOR)):
+        edges = [left + (first_column + k) * pitch for k in range(len(dates))]   # the gaps between the maps [in]
+        for date, x in zip(dates, edges):
+            fig.text(fx(x), fy(y), nice_day(date), ha="center", va="center", fontsize=9.5, color=colour)
+        for x0, x1 in zip(edges[:-1], edges[1:]):
+            fig.add_artist(FancyArrowPatch((fx(x0 + 0.3), fy(y)), (fx(x1 - 0.3), fy(y)), transform=fig.transFigure,
+                                           arrowstyle="-|>", mutation_scale=9, color=colour, lw=1.0))
+
+    # row names and colour bars. The bars are one map tall, so their labels break over two lines.
+    for text, y_bottom, h in ((f"NISAR Track {int(TRACK)}\nSWE Change", y_nisar, map_h),
+                              ("NIVAL Airborne\nLidar Snow\nDepth Change", y_lidar, lidar_h)):
+        fig.text(fx(0.34), fy(y_bottom - h / 2), text, rotation=90, ha="center", va="center", fontsize=10.5,
+                 linespacing=1.25)
+    for image, y_bottom, h, text in ((lidar_image, y_lidar, lidar_h, f"{DEPTH}\nchange ({DEPTH_UNIT})"),
+                                     (nisar_image, y_nisar, map_h, SWE_CHANGE.replace(" change", "\nchange") + f" ({SWE_UNIT})")):
+        cax = fig.add_axes([fx(width - right + 0.3), fy(y_bottom), fx(0.13), h / height])
+        colorbar = fig.colorbar(image, cax=cax, extend="both")
+        colorbar.set_label(text, fontsize=10); cax.tick_params(labelsize=9.5)
+
+    # one key for the whole figure, in a single row along the top
+    fig.legend(handles=[Line2D([], [], marker="*", color="none", mfc="white", mec="k", mew=0.5, ms=9,
+                               label="SNOTEL 637"),
+                        Line2D([], [], color=NISAR_COLOR, lw=1.1, label="NISAR acquisition"),
+                        Line2D([], [], color=LIDAR_COLOR, lw=2.1, ls=(0, (3, 2)), label="lidar flight")],
+               loc="upper left", bbox_to_anchor=(fx(left - 0.08), 1 - 0.08 / height), ncol=3, columnspacing=1.4,
+               fontsize=9.5, frameon=False, handlelength=1.6, borderaxespad=0)
+
+    out = paths.FIGURES_DIR / "fig3a_pair_timeline.png"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    _save_print(fig, out, 18)
+    print("saved ->", out)
+    plt.close(fig)
+    _season_totals_figure(cumulative, xs, ys, station_xy, extent, gunws[0][1], gunws[-1][2], map_box)
+
+
+def _season_totals_figure(cumulative, xs, ys, station_xy, extent, first_date, last_date, map_box):
+    """The other half of the split Fig. 3: the summed NISAR SWE change [m] on the grid xs / ys,
+    the lidar snow depth of the last date, and one against the other."""
+    nice_day = lambda stamp: f"{pd.Timestamp(stamp):%b} {pd.Timestamp(stamp).day}"
+    box_aspect = (map_box["extent"][3] - map_box["extent"][2]) / (map_box["extent"][1] - map_box["extent"][0])
+    # figure geometry in inches, measured from the top edge: three equal boxes across the width,
+    # with the gaps that hold their colour bars and the scatter's axis labels
+    width = 12.0
+    gap_maps, gap_scatter, totals_left, totals_right = 1.0, 1.62, 0.15, 0.9
+    total_w = (width - totals_left - totals_right - gap_maps - gap_scatter) / 3
+    totals_h = total_w * box_aspect
+    y_totals = 0.5 + totals_h                               # bottom of the panels, under their titles
+    height = y_totals + 0.48
+    fx = lambda inches: inches / width                      # inches from the left -> figure fraction
+    fy = lambda inches: 1 - inches / height                 # inches from the top -> figure fraction
+    fig = plt.figure(figsize=(width, height), dpi=300)
+
+    # season totals, each in what its instrument measures: the summed NISAR SWE change, and the
+    # lidar snow depth of the last date. No density is assumed.
+    grid = xr.DataArray(cumulative, coords={"y": ys, "x": xs}, dims=("y", "x")).rio.write_crs(paths.EPSG)
+    depth = rioxarray.open_rasterio(lidar_file(last_date), masked=True).squeeze().rio.write_nodata(np.nan)
+    depth = depth.rio.reproject_match(grid, resampling=Resampling.average).values   # metres, on the 80 m grid
+    if np.nanmax(depth) > 10:
+        raise ValueError("lidar snow depth is not plausible in metres; check units")
+    print(f"  totals: {first_date} to {last_date} | NISAR cumulative median {np.nanmedian(cumulative) * 1000:.0f} mm | "
+          f"lidar depth median {np.nanmedian(depth):.2f} m")
+    # three equal boxes in a row: two maps, each with its colour bar in the gap to its right,
+    # then the scatter, which also needs room on its left for its own axis labels
+    panels = ((cumulative * 1000, f"Cumulative NISAR SWE,\n{nice_day(first_date)} to {nice_day(last_date)}",
+               TOTAL_LIM_MM, SWE_CHANGE_LABEL),
+              (depth, f"{DEPTH},\n{nice_day(last_date)}", DEPTH_LIM_M, DEPTH_LABEL))
+    for k, (field, title, limit, unit) in enumerate(panels):
+        x_map = totals_left + k * (total_w + gap_maps)
+        ax = fig.add_axes([fx(x_map), fy(y_totals), fx(total_w), totals_h / height])
+        setup_map_axes(ax, map_box)                         # the Fig. 1 projection + bounds
+        total_image = ax.imshow(field, extent=extent, origin="upper", cmap=cmocean.cm.ice, vmin=0, vmax=limit)
+        ax.contour(map_box["lidar_mask"], levels=[0.5], extent=map_box["lidar_extent"], origin="upper",
+                   colors=LIDAR_OUTLINE_C, linewidths=1.6)
+        ax.plot(*station_xy, "*", color="white", mec="k", mew=0.5, ms=9)
+        ax.set_xticks([]); ax.set_yticks([]); ax.set_xlabel(""); ax.set_ylabel("")
+        ax.set_title(title, fontsize=10.5)
+        panel_letter(ax, "ab"[k], fontsize=11)
+        # each map has its own colour bar: the two are in different units
+        cax = fig.add_axes([fx(x_map + total_w + 0.12), fy(y_totals - 0.1 * totals_h), fx(0.12), 0.8 * totals_h / height])
+        colorbar = fig.colorbar(total_image, cax=cax, extend="max")
+        colorbar.set_label(unit, fontsize=10.5); cax.tick_params(labelsize=9.5)
+    # the two totals against each other, pixel by pixel, where both exist
+    x_scatter = totals_left + 2 * total_w + gap_maps + gap_scatter
+    ax = fig.add_axes([fx(x_scatter), fy(y_totals), fx(total_w), totals_h / height])
+    hexes = density_scatter(ax, depth, cumulative * 1000, (0, DEPTH_LIM_M * 1.3, 0, TOTAL_LIM_MM * 1.05))
+    slope, intercept = density_fit(ax, depth, cumulative * 1000, "lower right", fontsize=9.5)
+    print(f"  totals fit: slope {slope:.0f} kg/m3, intercept {intercept:+.0f} mm")
+    ax.set_xlabel(DEPTH_LABEL, fontsize=10.5); ax.set_ylabel(f"Cumulative {SWE_CHANGE_LABEL}", fontsize=10.5)
+    ax.title.set_fontsize(10.5); ax.tick_params(labelsize=9.5)
+    panel_letter(ax, "c", fontsize=11)
+    cax = fig.add_axes([fx(x_scatter + total_w + 0.12), fy(y_totals - 0.1 * totals_h), fx(0.12), 0.8 * totals_h / height])
+    colorbar = fig.colorbar(hexes, cax=cax)
+    count_colorbar(colorbar)
+    colorbar.ax.yaxis.label.set_size(10.5); cax.tick_params(which="both", labelsize=9.5)
+
+    out = paths.FIGURES_DIR / "fig3b_season_totals.png"
+    _save_print(fig, out, 18)
+    print("saved ->", out)
+    plt.close(fig)
 
 
 if __name__ == "__main__":

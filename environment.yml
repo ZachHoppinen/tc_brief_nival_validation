@@ -16,7 +16,6 @@ dependencies:
   # --- remote data fetches: download_paper_data ---
   - earthaccess      # NSIDC / ASF via NASA Earthdata
   - requests
-  - dem_stitcher     # public Copernicus GLO-30 DEM, geoid->ellipsoid
   # --- retrieval + stats + figures ---
   - numpy=1.26.4
   - scipy

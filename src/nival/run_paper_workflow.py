@@ -9,12 +9,13 @@ supplement.
   3. stats      paper_stats.write_report()   every number the manuscript cites -> outputs/paper_stats.md
   4. figures    paper_figures.*_figure()     the three paper figures -> figures/
   5. supplement download_supplement_data.main()  SNOTEL temperature profile -> data/
-                supplement_figures.main()    table_s1.tex -> outputs/, figS2 -> figures/supplement/
+                supplement_figures.main()    table_s1.tex -> outputs/, figS1 to figS3 -> figures/supplement/
 
 The interferograms are the operational L2 GUNWs as delivered by ASF
 (NISAR_L2_GUNW_PROVISIONAL_V1, PGE R05.02.3), except for the pairs we produced ourselves with
 Hyp3-Isce3 from refocused RSLCs: those crops are staged by hand in data/gunw_refocused/, like
-the met CSVs in data/met/. The downloads skip anything already on disk, so a rerun only redoes
+the met CSVs in data/met/. Fig. S1's two RSLC amplitude windows are staged by hand too, in
+data/rslc_windows/. The downloads skip anything already on disk, so a rerun only redoes
 the processing, stats and figures. Step 1 fetches about 13 GB.
 
     conda run -n nival python src/nival/run_paper_workflow.py
@@ -44,9 +45,9 @@ if __name__ == "__main__":
     print("=== 4/5 figures ===")
     paper_figures.context_figure()         # fig1_context.png
     paper_figures.results_figure()         # fig2_results.png
-    paper_figures.swe_timeline_figure()    # fig3_swe_timeline.png
+    paper_figures.swe_timeline_figure()    # fig3a_pair_timeline.png, fig3b_season_totals.png
 
     print("=== 5/5 supplement ===")
     download_supplement_data.main()        # SNOTEL temperature profile
-    supplement_figures.main()              # table_s1.tex, figS2
+    supplement_figures.main()              # table_s1.tex, figS1, figS2, figS3
     print(f"done -> {paths.OUTPUTS} and {paths.FIGURES_DIR}")

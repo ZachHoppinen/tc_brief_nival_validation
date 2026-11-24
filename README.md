@@ -4,7 +4,8 @@ Self-contained reproduction of the **NISAR L-band InSAR dSWE vs NIVAL lidar dHS*
 comparison at Mores Creek Summit, Idaho (NISAR ASC-077, 7 -> 19 Feb 2026).
 
 The analysis reads the **operational NISAR L2 GUNW** for this pair as delivered by ASF
-(`NISAR_L2_GUNW_PROVISIONAL_V1`, PGE R05.02.3, 80 m unwrapped posting). Fig. 3 follows the
+(`NISAR_L2_GUNW_PROVISIONAL_V1`, PGE R05.02.3, 80 m unwrapped posting), with the GUNW's own ionosphere and
+troposphere screens removed and the phase referenced to SNOTEL 637. Fig. 3 follows the
 same track through the season, Nov 3 to Mar 15, and for two of its seven pairs uses GUNWs we
 produced ourselves with Hyp3-Isce3 from refocused RSLCs. NISAR phase-derived SWE change (dSWE) tracks the airborne-lidar snow-depth
 change (dHS) across an 8 km mountain scene, and agreement rises as low-coherence pixels are
@@ -12,10 +13,10 @@ excluded while the retrieved density stays put.
 
 | coherence gate | r | RMSE | density | n | % of valid |
 |---|---|---|---|---|---|
-| all pixels | 0.82 | 19 mm | 150 | 4,976 | 100% |
-| > 0.2 | 0.93 | 12 mm | 157 | 2,891 | 58% |
-| > 0.4 | 0.96 |  9 mm | 161 | 1,004 | 20% |
-| > 0.5 | 0.96 |  9 mm | 162 |   463 |  9% |
+| all pixels | 0.75 | 21 mm | 122 | 4,976 | 100% |
+| > 0.2 | 0.90 | 12 mm | 135 | 2,891 | 58% |
+| > 0.4 | 0.95 |  9 mm | 136 | 1,004 | 20% |
+| > 0.5 | 0.94 | 10 mm | 134 |   463 |  9% |
 
 ## Install (two steps)
 
@@ -54,13 +55,14 @@ python src/nival/download_paper_data.py      # 1. fetch remote data: ancillary l
 python src/nival/build_multipair.py          # 2. one dSWE/dHS product per track-077 pair
 python src/nival/paper_stats.py              # 3. every number the manuscript cites -> outputs/paper_stats.md
 python src/nival/paper_figures.py            # 4. the three paper figures -> figures/
-python src/nival/supplement/supplement_figures.py   # 5. table S1, figS2
+python src/nival/supplement/supplement_figures.py   # 5. table S1, figS1, figS2, figS3
 ```
 
-Everything is fetched fresh from its authoritative source **except** two hand-staged inputs
+Everything is fetched fresh from its authoritative source **except** three hand-staged inputs
 that are not distributed anywhere: the on-site met CSVs under `data/met/` (tracked), and the
 Hyp3-Isce3 GUNW crops under `data/gunw_refocused/` (not tracked: copy them in by hand; Fig. 3
-needs the two track-077 ones). `data/` is gitignored except the met CSVs.
+needs the two track-077 ones), and the two RSLC amplitude windows Fig. S1 compares, under
+`data/rslc_windows/` (not tracked). `data/` is gitignored except the met CSVs.
 
 ## Layout
 
@@ -75,7 +77,7 @@ src/nival/
   paper_stats.py          RUN: products -> outputs/paper_stats.md
   paper_figures.py        RUN: the three paper figures (plus draw helpers, met readers, study-area map)
   supplement/             download_supplement_data.py (RUN: SNOTEL temperature profile),
-                          supplement_figures.py (RUN: table S1, figS2), wetness.py
+                          supplement_figures.py (RUN: table S1, figS1, figS2, figS3), wetness.py
 old/       retired code and figures: the 20 m unwrap and the 20 m Fig. 3, the all-track timeline, press figures
 outputs/   retrieval/dswe_dhs_operational.nc (the analysis product), retrieval_multipair/ (one per pair)
 figures/   fig1_context, fig2_results, fig3_swe_timeline and supplement/ (the deliverables)

@@ -8,7 +8,7 @@ One script, run once. Pulls:
   WorldCover 2021         -- ESA (AWS)               -> worldcover_class_mores.tif
   MTBS burn severity      -- USFS ImageServer        -> mtbs_severity_mores.tif
   NAIP aerial basemap     -- USGS ImageServer        -> naip_basemap.png
-  Copernicus GLO-30 DEM   -- dem_stitcher (public)   -> outputs/gunw/dem_subset.tif
+  NISAR DEM               -- earthaccess (NISAR_DEM)  -> outputs/gunw/dem_subset.tif
   operational L2 GUNW     -- ASF (2.5 GB)            -> data/gunw_operational/
   Fig. 3 pair GUNWs       -- ASF (2.3 GB each): every production GUNW of track 077 from
                              Nov 3 to Mar 15         -> data/gunw_operational/
@@ -159,19 +159,33 @@ def fetch_worldcover():
 
 
 def fetch_dem():
-    """Copernicus GLO-30 over the AOI (+0.1 deg buffer), ellipsoidal heights -> the scene DEM."""
+    """NISAR DEM over the AOI (+0.1 deg buffer) -> the scene DEM. This is the DEM the NISAR products are
+    processed against (collection NISAR_DEM on Earthdata): ellipsoidal heights, pixel centres on whole arc-seconds."""
     if paths.SUBSET_DEM.exists():
         print(f"  skip (exists): {paths.SUBSET_DEM.name}")
         return
     import rasterio
-    from dem_stitcher import stitch_dem
+    from rasterio.merge import merge
+    from rasterio.windows import from_bounds
     west, south, east, north = paths.AOI
-    # same buffer and ellipsoid conversion the retired generate_gunw.py used, so the DEM is unchanged
-    dem_array, dem_profile = stitch_dem([west - 0.1, south - 0.1, east + 0.1, north + 0.1],
-                                        dem_name="glo_30", dst_ellipsoidal_height=True)
+    bounds = (west - 0.1, south - 0.1, east + 0.1, north + 0.1)
+    earthaccess.login()
+    tiles = earthaccess.download(earthaccess.search_data(short_name="NISAR_DEM", bounding_box=bounds),
+                                 str(paths.REMOTE_DIR / "nisar_dem"))
+    # mosaic the geographic 1-degree tiles on their own pixel lattice, then cut on whole pixels: no height is resampled or moved
+    sources = [rasterio.open(t) for t in sorted(str(t) for t in tiles if str(t).endswith(".tif"))]
+    sources = [src for src in sources if src.crs.to_epsg() == 4326]
+    mosaic, transform = merge(sources)
+    window = from_bounds(*bounds, transform=transform).round_offsets().round_lengths()
+    rows, cols = window.toslices()
+    dem = mosaic[0][rows, cols]
+    profile = sources[0].profile | dict(height=dem.shape[0], width=dem.shape[1], driver="GTiff",
+                                        transform=rasterio.windows.transform(window, transform))
+    if not (dem.min() > -500 and dem.max() < 9000):
+        raise ValueError("NISAR DEM heights are not plausible in metres; check units")
     paths.SUBSET_DEM.parent.mkdir(parents=True, exist_ok=True)
-    with rasterio.open(paths.SUBSET_DEM, "w", **dem_profile) as dst:
-        dst.write(dem_array, 1)
+    with rasterio.open(paths.SUBSET_DEM, "w", **profile) as dst:
+        dst.write(dem, 1)
     print(f"  wrote {paths.SUBSET_DEM.name}")
 
 
@@ -277,6 +291,12 @@ def local_gunws():
     return sorted((*pair, *value) for pair, value in found.items() if in_window(pair[2]))
 
 
+def pair_gunw(pair):
+    """The GUNW the paper uses for one (track, ref, sec, ...) pair: our refocused one where
+    there is one, otherwise the production one. None if neither is on disk."""
+    return next((g[3] for g in local_gunws() if g[:3] == tuple(pair[:3])), None)
+
+
 def fetch_gunws(tracks=None, last=None):
     """Every production GUNW on ASF that covers the AOI and whose pair ends inside the census
     window. `tracks` keeps only those tracks and `last` ("YYYYMMDD") only pairs ending by that
@@ -326,6 +346,26 @@ def fetch_snotel_season():
     print(f"  wrote {paths.SNOTEL_SEASON.name} ({len(rows)} days)")
 
 
+def fetch_snotel_air_temp():
+    """SNOTEL 637 hourly air temperature across the whole water year, in degrees C with UTC times."""
+    if paths.SNOTEL_AIR_TEMP.exists():
+        print(f"  skip (exists): {paths.SNOTEL_AIR_TEMP.name}")
+        return
+    url = (f"{AWDB}/data?stationTriplets={SNOTEL_STATION}&elements=TOBS&duration=HOURLY"
+           f"&beginDate={paths.SEASON_D0}&endDate={paths.SEASON_D1}")
+    series = _get_json(url)[0]["data"][0]
+    assert series["stationElement"]["storedUnitCode"] == "degF"
+    degf = pd.Series({v["date"]: v.get("value") for v in series["values"]}, dtype=float)
+    # the station reports in UTC-8 all year (its dataTimeZone); shift to UTC and degF -> degC at ingest
+    degc = (degf - 32.0) * 5.0 / 9.0
+    degc.index = pd.to_datetime(degc.index) + pd.Timedelta(hours=8)
+    if not (degc.min() > -50 and degc.max() < 45):
+        raise ValueError("SNOTEL air temperature is not plausible in degrees C; check units")
+    paths.SNOTEL_AIR_TEMP.parent.mkdir(parents=True, exist_ok=True)
+    degc.rename("air_temp_c").rename_axis("time_utc").to_csv(paths.SNOTEL_AIR_TEMP)
+    print(f"  wrote {paths.SNOTEL_AIR_TEMP.name} ({len(degc)} hours)")
+
+
 def main():
     earthaccess.login()
     print("NIVAL lidar snow depth (Feb7 + Feb22)...")
@@ -339,7 +379,7 @@ def main():
     fetch_fire()
     print("WorldCover (ESA)...")
     fetch_worldcover()
-    print("Copernicus GLO-30 DEM (public)...")
+    print("NISAR DEM (Earthdata)...")
     fetch_dem()
     print("MTBS burn severity (USFS)...")
     fetch_mtbs()

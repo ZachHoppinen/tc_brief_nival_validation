@@ -21,8 +21,8 @@ figures/*
 !figures/fig3_swe_timeline.png
 !figures/supplement/
 figures/supplement/*
-!figures/supplement/figS1_coherence_077.png
-!figures/supplement/figS2_temperature_profiles.png
+!figures/supplement/figS1_rslc_refocus.png
+!figures/supplement/figS2_atmospheric_phase.png
 
 # exploratory / one-off analysis scripts
 scratch/
